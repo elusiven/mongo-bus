@@ -31,7 +31,7 @@ Add the `MongoBus` project reference or install the NuGet package:
 
 ```bash
 # Example if using NuGet
-dotnet add package MongoBus.CloudEvents
+dotnet add package MongoBus
 ```
 
 ### Configuration
