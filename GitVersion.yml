@@ -1,0 +1,15 @@
+mode: Mainline
+branches:
+  main:
+    regex: ^master$|^main$
+    mode: ContinuousDelivery
+    tag: ''
+    increment: Patch
+    prevent-tag-on-merged-clusters: true
+    track-merge-target: false
+    tracks-release-branches: false
+    is-release-branch: true
+    is-mainline: true
+ignore:
+  sha: []
+merge-message-formats: {}
