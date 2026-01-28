@@ -2,11 +2,8 @@ mode: Mainline
 branches:
   main:
     regex: ^master$|^main$
-    mode: ContinuousDelivery
     label: ''
     increment: Patch
-    is-release-branch: true
-    is-mainline: true
 ignore:
   sha: []
 merge-message-formats: {}
