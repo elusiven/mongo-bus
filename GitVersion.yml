@@ -5,9 +5,6 @@ branches:
     mode: ContinuousDelivery
     label: ''
     increment: Patch
-    prevent-label-on-merged-clusters: true
-    track-merge-target: false
-    tracks-release-branches: false
     is-release-branch: true
     is-mainline: true
 ignore:
