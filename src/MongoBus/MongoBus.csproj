@@ -13,7 +13,6 @@
     <Copyright>Piotr Kujawski Software</Copyright>
     <PackageProjectUrl>https://github.com/elusiven/mongo-bus</PackageProjectUrl>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
-    <PackageLicenseUrl>https://github.com/elusiven/mongo-bus?tab=Apache-2.0-1-ov-file</PackageLicenseUrl>
   </PropertyGroup>
 
   <ItemGroup>
