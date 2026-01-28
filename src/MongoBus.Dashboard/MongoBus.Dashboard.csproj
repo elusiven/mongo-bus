@@ -19,6 +19,11 @@
     <Description>Monitoring dashboard for MongoBus.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <Copyright>Piotr Kujawski Software</Copyright>
+    <PackageProjectUrl>https://github.com/elusiven/mongo-bus</PackageProjectUrl>
+    <PackageLicenseUrl>https://github.com/elusiven/mongo-bus?tab=Apache-2.0-1-ov-file</PackageLicenseUrl>
+    <RepositoryUrl>https://github.com/elusiven/mongo-bus</RepositoryUrl>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
   </PropertyGroup>
 
   <ItemGroup>
