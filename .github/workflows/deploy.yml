@@ -23,6 +23,21 @@ jobs:
             - name: Determine Version
               id: gitversion
               uses: gittools/actions/gitversion/execute@v4.2.0
+              with:
+                configFilePath: GitVersion.yml
+
+            - name: Display GitVersion outputs
+              run: |
+                echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
+                echo "NuGetVersionV2: ${{ steps.gitversion.outputs.nuGetVersionV2 }}"
+                echo "FullSemVer: ${{ steps.gitversion.outputs.fullSemVer }}"
+
+            - name: Validate Version
+              run: |
+                if [ -z "${{ steps.gitversion.outputs.nuGetVersionV2 }}" ]; then
+                  echo "Error: GitVersion did not produce a version"
+                  exit 1
+                fi
 
             - name: Setup .NET
               uses: actions/setup-dotnet@v4
