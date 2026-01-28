@@ -3,9 +3,9 @@ branches:
   main:
     regex: ^master$|^main$
     mode: ContinuousDelivery
-    tag: ''
+    label: ''
     increment: Patch
-    prevent-tag-on-merged-clusters: true
+    prevent-label-on-merged-clusters: true
     track-merge-target: false
     tracks-release-branches: false
     is-release-branch: true
