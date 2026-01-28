@@ -1,4 +1,4 @@
-name: Deploy to NuGetto
+name: Deploy to NuGet
 
 on:
   push:
@@ -11,39 +11,39 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Install GitVersion
-      uses: gittools/actions/setup@v6.0.0
-      with:
-        versionSpec: '6.x'
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v1.1.1
+        with:
+          versionSpec: '6.x'
 
-    - name: Determine Version
-      id: gitversion
-      uses: gittools/actions/execute@v6.0.0
-      with:
-        useConfigFile: true
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v1.1.1
+        with:
+          useConfigFile: true
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: |
-          8.x
-          10.x
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.x
+            10.x
 
-    - name: Restore dependencies
-      run: dotnet restore
+      - name: Restore dependencies
+        run: dotnet restore
 
-    - name: Build
-      run: dotnet build --no-restore -c Release /p:Version=${{ steps.gitversion.outputs.semVer }}
+      - name: Build
+        run: dotnet build --no-restore -c Release /p:Version=${{ steps.gitversion.outputs.semVer }}
 
-    - name: Pack
-      run: dotnet pack --no-build -c Release -o out /p:Version=${{ steps.gitversion.outputs.semVer }}
+      - name: Pack
+        run: dotnet pack --no-build -c Release -o out /p:Version=${{ steps.gitversion.outputs.semVer }}
 
-    - name: Push to NuGet
-      run: dotnet nuget push "out/*.nupkg" -k ${{ secrets.NUGET_API_KEY }} -s https://api.nuget.org/v3/index.json --skip-duplicate
+      - name: Push to NuGet
+        run: dotnet nuget push "out/*.nupkg" -k ${{ secrets.NUGET_API_KEY }} -s https://api.nuget.org/v3/index.json --skip-duplicate
 
-    - name: Push to GitHub Packages
-      run: dotnet nuget push "out/*.nupkg" -k ${{ secrets.GH_TOKEN }} -s https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+      - name: Push to GitHub Packages
+        run: dotnet nuget push "out/*.nupkg" -k ${{ secrets.GH_TOKEN }} -s https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
