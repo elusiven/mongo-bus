@@ -16,14 +16,15 @@ jobs:
                   fetch-depth: 0
 
             - name: Install GitVersion
-              uses: gittools/actions/gitversion/setup@v4.2.0
+              uses: gittools/actions/gitversion/setup@v3.1.11
               with:
-                  versionSpec: '6.x'
+                  versionSpec: '5.x'
 
             - name: Determine Version
               id: gitversion
-              uses: gittools/actions/gitversion/execute@v4.2.0
+              uses: gittools/actions/gitversion/execute@v3.1.11
               with:
+                useConfigFile: true
                 configFilePath: GitVersion.yml
 
             - name: Display GitVersion outputs

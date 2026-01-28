@@ -1,9 +1,13 @@
-workflow: GitHubFlow/v1
+mode: ContinuousDelivery
 branches:
   main:
     regex: ^master$|^main$
-    label: ''
+    tag: ''
     increment: Patch
+    prevent-increment-of-merged-branch-version: true
+    track-merge-target: false
+    tracks-release-branches: false
+    is-release-branch: true
 ignore:
   sha: []
 merge-message-formats: {}
