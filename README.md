@@ -1,5 +1,7 @@
 # MongoBus
 
+<img width="1024" height="1024" alt="ChatGPT Image 28 sty 2026, 12_59_12" src="https://github.com/user-attachments/assets/32751e8b-2c8d-4311-854f-c14e01704285" />
+
 A MongoDB-backed message bus for .NET using CloudEvents for polyglot interop.
 
 ## Features
