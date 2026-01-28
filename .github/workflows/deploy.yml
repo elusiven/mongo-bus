@@ -16,13 +16,13 @@ jobs:
         fetch-depth: 0
 
     - name: Install GitVersion
-      uses: gittools/actions/gitversion/setup@v6.0.0
+      uses: gittools/actions/setup@v6.0.0
       with:
         versionSpec: '6.x'
 
     - name: Determine Version
       id: gitversion
-      uses: gittools/actions/gitversion/execute@v6.0.0
+      uses: gittools/actions/execute@v6.0.0
       with:
         useConfigFile: true
 
