@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MongoBus\MongoBus.csproj" />
+    <ProjectReference Include="..\..\src\MongoBus.ClaimCheck.GridFs\MongoBus.ClaimCheck.GridFs.csproj" />
   </ItemGroup>
 
 </Project>

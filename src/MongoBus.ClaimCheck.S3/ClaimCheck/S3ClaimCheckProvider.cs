@@ -1,4 +1,4 @@
-﻿using Amazon;
+using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using MongoBus.Abstractions;
@@ -80,7 +80,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
                 // To get metadata, we'd need to call GetObjectMetadata for each object.
                 // S3 ListObjects doesn't return user-defined metadata.
                 // However, we have LastModified from the list result.
-                
+
                 yield return new ClaimCheckReference(
                     Provider: Name,
                     Container: _options.BucketName,

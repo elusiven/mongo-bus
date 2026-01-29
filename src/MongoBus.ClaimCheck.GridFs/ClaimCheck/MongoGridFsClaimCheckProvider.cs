@@ -1,4 +1,4 @@
-﻿using MongoBus.Abstractions;
+using MongoBus.Abstractions;
 using MongoBus.Internal.ClaimCheck;
 using MongoBus.Models;
 using MongoDB.Bson;
@@ -27,7 +27,7 @@ public sealed class MongoGridFsClaimCheckProvider(IMongoDatabase database, strin
                 metadata[kvp.Key] = kvp.Value;
             }
         }
-        
+
         if (!string.IsNullOrEmpty(request.ContentType))
         {
             metadata["contentType"] = request.ContentType;

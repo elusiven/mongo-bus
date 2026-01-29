@@ -1,6 +1,6 @@
 namespace MongoBus.Internal.ClaimCheck;
 
-internal static class ClaimCheckConstants
+public static class ClaimCheckConstants
 {
     public const string ContentType = "application/vnd.mongobus.claim-check+json";
     public const string DefaultObjectContentType = "application/json";

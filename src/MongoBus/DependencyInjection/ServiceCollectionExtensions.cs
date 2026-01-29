@@ -49,13 +49,6 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddMongoBusGridFsClaimCheck(this IServiceCollection services, string bucketName = "claimcheck")
-    {
-        services.AddSingleton<IClaimCheckProvider>(sp => 
-            new MongoGridFsClaimCheckProvider(sp.GetRequiredService<IMongoDatabase>(), bucketName));
-        return services;
-    }
-
     private static MongoBusOptions BuildOptions(Action<MongoBusOptions> configure)
     {
         var opt = new MongoBusOptions();

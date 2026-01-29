@@ -62,7 +62,7 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
             var metadata = item.Metadata;
             if (metadata != null && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey.Replace("-", ""), out var caStr) && DateTime.TryParse(caStr, out var ca))
             {
-                // Azure blob metadata keys are alphanumeric and case-insensitive, often stripped of hyphens by some tools, 
+                // Azure blob metadata keys are alphanumeric and case-insensitive, often stripped of hyphens by some tools,
                 // but usually preserved if set via SDK. Let's be careful.
                 createdAt = ca;
             }
