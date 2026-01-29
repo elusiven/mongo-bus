@@ -59,13 +59,14 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
         await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, cancellationToken: ct))
         {
             DateTime? createdAt = item.Properties.CreatedOn?.UtcDateTime;
-            if (item.Metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey.Replace("-", ""), out var caStr) && DateTime.TryParse(caStr, out var ca))
+            var metadata = item.Metadata;
+            if (metadata != null && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey.Replace("-", ""), out var caStr) && DateTime.TryParse(caStr, out var ca))
             {
                 // Azure blob metadata keys are alphanumeric and case-insensitive, often stripped of hyphens by some tools, 
                 // but usually preserved if set via SDK. Let's be careful.
                 createdAt = ca;
             }
-            else if (item.Metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey, out var caStr2) && DateTime.TryParse(caStr2, out var ca2))
+            else if (metadata != null && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey, out var caStr2) && DateTime.TryParse(caStr2, out var ca2))
             {
                 createdAt = ca2;
             }
@@ -76,7 +77,7 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
                 Key: item.Name,
                 Length: item.Properties.ContentLength ?? 0,
                 ContentType: item.Properties.ContentType,
-                Metadata: item.Metadata?.ToDictionary(k => k.Key, v => v.Value),
+                Metadata: metadata?.ToDictionary(k => k.Key, v => v.Value),
                 CreatedAt: createdAt);
         }
     }
