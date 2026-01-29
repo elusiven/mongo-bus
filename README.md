@@ -159,7 +159,7 @@ builder.Services.AddMongoBus(opt =>
     
     // Optional: Enable automatic compression
     opt.ClaimCheck.Compression.Enabled = true; 
-    opt.ClaimCheck.Compression.Algorithm = "gzip"; // default
+    opt.ClaimCheck.Compression.Algorithm = "gzip"; 
 });
 ```
 
