@@ -14,4 +14,3 @@ branches:
     is-release-branch: false
 ignore:
   sha: []
-merge-message-formats: {}
