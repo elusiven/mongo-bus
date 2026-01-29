@@ -30,4 +30,19 @@ public sealed class InMemoryClaimCheckProvider : IClaimCheckProvider
         Stream stream = new MemoryStream(bytes, writable: false);
         return Task.FromResult(stream);
     }
+
+    public Task DeleteAsync(ClaimCheckReference reference, CancellationToken ct)
+    {
+        _store.TryRemove(reference.Key, out _);
+        return Task.CompletedTask;
+    }
+
+    public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        foreach (var key in _store.Keys)
+        {
+            yield return new ClaimCheckReference(Name, "memory", key, _store[key].LongLength);
+        }
+        await Task.CompletedTask;
+    }
 }

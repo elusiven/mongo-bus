@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
 
         services.AddHostedService<MongoBusIndexesHostedService>();
         services.AddHostedService<MongoBusRuntime>();
+        services.AddHostedService<ClaimCheckCleanupService>();
 
         return services;
     }

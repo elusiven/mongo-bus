@@ -3,6 +3,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using MongoBus.Abstractions;
 using MongoBus.DependencyInjection;
+using MongoBus.Internal.ClaimCheck;
 using MongoBus.Models;
 
 namespace MongoBus.ClaimCheck;
@@ -55,6 +56,41 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     {
         var response = await _client.GetObjectAsync(reference.Container, reference.Key, ct);
         return new ResponseStream(response);
+    }
+
+    public async Task DeleteAsync(ClaimCheckReference reference, CancellationToken ct)
+    {
+        await _client.DeleteObjectAsync(reference.Container, reference.Key, ct);
+    }
+
+    public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var request = new ListObjectsV2Request
+        {
+            BucketName = _options.BucketName,
+            Prefix = _options.KeyPrefix
+        };
+
+        ListObjectsV2Response response;
+        do
+        {
+            response = await _client.ListObjectsV2Async(request, ct);
+            foreach (var s3Object in response.S3Objects)
+            {
+                // To get metadata, we'd need to call GetObjectMetadata for each object.
+                // S3 ListObjects doesn't return user-defined metadata.
+                // However, we have LastModified from the list result.
+                
+                yield return new ClaimCheckReference(
+                    Provider: Name,
+                    Container: _options.BucketName,
+                    Key: s3Object.Key,
+                    Length: s3Object.Size,
+                    CreatedAt: s3Object.LastModified.ToUniversalTime());
+            }
+
+            request.ContinuationToken = response.NextContinuationToken;
+        } while (response.IsTruncated);
     }
 
     private string BuildKey()

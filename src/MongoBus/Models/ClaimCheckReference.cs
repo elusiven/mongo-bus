@@ -8,4 +8,5 @@ public sealed record ClaimCheckReference(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("length")] long Length,
     [property: JsonPropertyName("contentType")] string? ContentType = null,
-    [property: JsonPropertyName("metadata")] IReadOnlyDictionary<string, string>? Metadata = null);
+    [property: JsonPropertyName("metadata")] IReadOnlyDictionary<string, string>? Metadata = null,
+    [property: JsonPropertyName("createdAt")] DateTime? CreatedAt = null);

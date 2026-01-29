@@ -131,6 +131,21 @@ builder.Services.AddMongoBusConsumeInterceptor<MyConsumeInterceptor>();
 
 MongoBus can automatically offload large message payloads to external blob storage (Claim Check pattern). When enabled, the bus stores a lightweight reference in MongoDB and retrieves the full payload during consumption.
 
+#### TTL and Cleanup
+
+By default, `InboxMessage` documents are automatically cleaned up from MongoDB after they are processed (default 7 days after creation). To prevent storage leaks, MongoBus also manages the cleanup of offloaded payloads:
+
+- **Automatic Cleanup**: A background service (`ClaimCheckCleanupService`) periodically identifies and deletes offloaded payloads that are no longer referenced by any message in the system.
+- **TTL for GridFS**: When using MongoDB GridFS, a native TTL index is automatically created on the files collection to ensure data is removed even if the background service is not running.
+- **Configuration**: You can tune the cleanup interval and safety margin:
+  ```csharp
+  services.AddMongoBus(opt => {
+      opt.ClaimCheck.Cleanup.Enabled = true;
+      opt.ClaimCheck.Cleanup.Interval = TimeSpan.FromHours(6);
+      opt.ClaimCheck.Cleanup.MinimumAge = TimeSpan.FromDays(8); // Should be > ProcessedMessageTtl
+  });
+  ```
+
 #### Enable Claim Check
 
 ```csharp

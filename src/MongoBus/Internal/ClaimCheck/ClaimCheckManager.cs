@@ -8,6 +8,7 @@ public interface IClaimCheckManager
 {
     Task<ClaimCheckDecision> TryStoreAsync<T>(PublishContext<T> context, CancellationToken ct);
     Task<object> ResolveAsync(ClaimCheckReference reference, Type messageType, CancellationToken ct);
+    Task DeleteAsync(ClaimCheckReference reference, CancellationToken ct);
 }
 
 public sealed record ClaimCheckDecision(bool IsClaimCheck, ClaimCheckReference? Reference);
@@ -70,6 +71,8 @@ internal sealed class ClaimCheckManager(
         try
         {
             var metadata = new Dictionary<string, string>();
+            metadata[ClaimCheckConstants.CreatedAtMetadataKey] = DateTime.UtcNow.ToString("O");
+
             if (options.ClaimCheck.Compression.Enabled)
             {
                 var compressor = compressorProvider.GetCompressor(options.ClaimCheck.Compression.Algorithm);
@@ -85,6 +88,12 @@ internal sealed class ClaimCheckManager(
 
             var claimReference = await provider.PutAsync(
                 new ClaimCheckWriteRequest(streamData, contentType, metadata, length), ct);
+
+            if (claimReference.CreatedAt == null)
+            {
+                // Ensure CreatedAt is set for cleanup purposes
+                return new ClaimCheckDecision(true, claimReference with { CreatedAt = DateTime.UtcNow });
+            }
                 
             return new ClaimCheckDecision(true, claimReference);
         }
@@ -112,6 +121,12 @@ internal sealed class ClaimCheckManager(
         {
             return await serializer.DeserializeAsync(stream, messageType, ct);
         }
+    }
+
+    public async Task DeleteAsync(ClaimCheckReference reference, CancellationToken ct)
+    {
+        var provider = providerResolver.GetProviderForReference(reference);
+        await provider.DeleteAsync(reference, ct);
     }
 
     private sealed class TempFile : IAsyncDisposable

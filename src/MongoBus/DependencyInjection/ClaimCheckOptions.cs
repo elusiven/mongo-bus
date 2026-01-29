@@ -6,6 +6,14 @@ public sealed class ClaimCheckOptions
     public long ThresholdBytes { get; set; } = 256 * 1024;
     public string? ProviderName { get; set; }
     public ClaimCheckCompressionOptions Compression { get; set; } = new();
+    public ClaimCheckCleanupOptions Cleanup { get; set; } = new();
+}
+
+public sealed class ClaimCheckCleanupOptions
+{
+    public bool Enabled { get; set; } = true;
+    public TimeSpan Interval { get; set; } = TimeSpan.FromHours(6);
+    public TimeSpan MinimumAge { get; set; } = TimeSpan.FromDays(8);
 }
 
 public sealed class ClaimCheckCompressionOptions

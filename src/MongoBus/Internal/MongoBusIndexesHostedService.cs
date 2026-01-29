@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using MongoBus.DependencyInjection;
 using MongoBus.Infrastructure;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace MongoBus.Internal;
@@ -39,6 +40,31 @@ public sealed class MongoBusIndexesHostedService : IHostedService
 
         await inbox.Indexes.CreateManyAsync(new[] { inboxIndex, inboxCreatedIndex }, cancellationToken: ct);
         await bindings.Indexes.CreateOneAsync(bindingUnique, cancellationToken: ct);
+
+        // GridFS TTL (optional but recommended if using GridFS claim check)
+        await CreateGridFsTtlIndexAsync(ct);
+    }
+
+    private async Task CreateGridFsTtlIndexAsync(CancellationToken ct)
+    {
+        // By default, GridFS uses 'fs.files' and 'fs.chunks'
+        // Users can override bucket name, so we might have multiple buckets.
+        // For simplicity, we'll try to apply to 'claimcheck.files' if it exists.
+        // Better: apply to any collection ending in '.files' if it's manageable.
+        
+        // Let's just do it for common ones or let the user configure it?
+        // Actually, we can list collections.
+        using var cursor = await _db.ListCollectionNamesAsync(cancellationToken: ct);
+        var collections = await cursor.ToListAsync(ct);
+        foreach (var coll in collections.Where(c => c.EndsWith(".files")))
+        {
+            var filesColl = _db.GetCollection<BsonDocument>(coll);
+            var ttlIndex = new CreateIndexModel<BsonDocument>(
+                Builders<BsonDocument>.IndexKeys.Ascending("uploadDate"),
+                new CreateIndexOptions { ExpireAfter = _options.ProcessedMessageTtl.Add(TimeSpan.FromDays(1)) });
+            
+            await filesColl.Indexes.CreateOneAsync(ttlIndex, cancellationToken: ct);
+        }
     }
 
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
