@@ -21,81 +21,43 @@ internal sealed class ClaimCheckManager(
 {
     public async Task<ClaimCheckDecision> TryStoreAsync<T>(PublishContext<T> context, CancellationToken ct)
     {
-        var data = context.Data;
-        var claimCheckEnabled = options.ClaimCheck.Enabled;
-
-        // If globally enabled, we ALWAYS check if it exceeds threshold.
-        // If globally disabled, we only claim-check if explicitly requested per message.
-        if (!claimCheckEnabled && context.UseClaimCheck != true)
+        if (!ShouldAttemptClaimCheck(context))
             return new ClaimCheckDecision(false, null);
 
+        var data = context.Data;
         if (data is null)
             return new ClaimCheckDecision(false, null);
 
         var provider = providerResolver.GetProvider(options.ClaimCheck.ProviderName);
+        var streamInfo = await CreateStreamAsync(context, data, ct);
+        if (streamInfo is null)
+            return new ClaimCheckDecision(false, null);
 
-        Stream streamData;
-        string contentType;
-        long? length = null;
-        bool shouldDisposeStream = false;
-
-        if (data is Stream s)
-        {
-            streamData = s;
-            contentType = ClaimCheckConstants.DefaultStreamContentType;
-            length = s.CanSeek ? s.Length : null;
-        }
-        else
-        {
-            var temp = await TempFile.CreateAsync(ct);
-            shouldDisposeStream = true;
-            await serializer.SerializeAsync(data, temp.Stream, ct);
-            await temp.Stream.FlushAsync(ct);
-            
-            if (temp.Stream.Length < options.ClaimCheck.ThresholdBytes)
-            {
-                // If it's below threshold, we only claim-check if explicitly forced
-                if (context.UseClaimCheck != true)
-                {
-                    await temp.DisposeAsync();
-                    return new ClaimCheckDecision(false, null);
-                }
-            }
-            
-            temp.Stream.Position = 0;
-            streamData = temp.Stream;
-            contentType = ClaimCheckConstants.DefaultObjectContentType;
-            length = temp.Stream.Length;
-        }
+        var streamData = streamInfo.Stream;
+        var length = streamInfo.Length;
+        var shouldDisposeStream = streamInfo.ShouldDispose;
 
         try
         {
-            var metadata = new Dictionary<string, string>();
-            metadata[ClaimCheckConstants.CreatedAtMetadataKey] = DateTime.UtcNow.ToString("O");
+            var metadata = CreateMetadata();
 
             if (options.ClaimCheck.Compression.Enabled)
             {
                 var compressor = compressorProvider.GetCompressor(options.ClaimCheck.Compression.Algorithm);
                 var compressedStream = await compressor.CompressAsync(streamData, ct);
-                
+
                 if (shouldDisposeStream) await streamData.DisposeAsync();
-                
+
                 streamData = compressedStream;
                 shouldDisposeStream = true;
                 length = streamData.Length;
-                metadata["x-mongobus-compression"] = compressor.Algorithm;
+                metadata[ClaimCheckConstants.CompressionMetadataKey] = compressor.Algorithm;
             }
 
             var claimReference = await provider.PutAsync(
-                new ClaimCheckWriteRequest(streamData, contentType, metadata, length), ct);
+                new ClaimCheckWriteRequest(streamData, streamInfo.ContentType, metadata, length), ct);
 
-            if (claimReference.CreatedAt == null)
-            {
-                // Ensure CreatedAt is set for cleanup purposes
-                return new ClaimCheckDecision(true, claimReference with { CreatedAt = DateTime.UtcNow });
-            }
-                
-            return new ClaimCheckDecision(true, claimReference);
+            return new ClaimCheckDecision(true, EnsureCreatedAt(claimReference));
         }
         finally
         {
@@ -108,7 +70,7 @@ internal sealed class ClaimCheckManager(
         var provider = providerResolver.GetProviderForReference(reference);
         var stream = await provider.OpenReadAsync(reference, ct);
 
-        if (reference.Metadata != null && reference.Metadata.TryGetValue("x-mongobus-compression", out var algorithm))
+        if (reference.Metadata != null && reference.Metadata.TryGetValue(ClaimCheckConstants.CompressionMetadataKey, out var algorithm))
         {
             var compressor = compressorProvider.GetCompressor(algorithm);
             stream = await compressor.DecompressAsync(stream, ct);
@@ -129,22 +91,60 @@ internal sealed class ClaimCheckManager(
         await provider.DeleteAsync(reference, ct);
     }
 
+    private bool ShouldAttemptClaimCheck<T>(PublishContext<T> context)
+    {
+        // If globally enabled, we ALWAYS check if it exceeds threshold.
+        // If globally disabled, we only claim-check if explicitly requested per message.
+        return options.ClaimCheck.Enabled || context.UseClaimCheck == true;
+    }
+
+    private async Task<StreamInfo?> CreateStreamAsync<T>(PublishContext<T> context, T data, CancellationToken ct)
+    {
+        if (data is Stream stream)
+        {
+            var streamLength = stream.CanSeek ? stream.Length : (long?)null;
+            return new StreamInfo(stream, ClaimCheckConstants.DefaultStreamContentType, streamLength, false);
+        }
+
+        var temp = await TempFile.CreateAsync();
+        await serializer.SerializeAsync(data!, temp.Stream, ct);
+        await temp.Stream.FlushAsync(ct);
+
+        if (temp.Stream.Length < options.ClaimCheck.ThresholdBytes && context.UseClaimCheck != true)
+        {
+            await temp.DisposeAsync();
+            return null;
+        }
+
+        temp.Stream.Position = 0;
+        return new StreamInfo(temp.Stream, ClaimCheckConstants.DefaultObjectContentType, temp.Stream.Length, true);
+    }
+
+    private static Dictionary<string, string> CreateMetadata() =>
+        new()
+        {
+            [ClaimCheckConstants.CreatedAtMetadataKey] = DateTime.UtcNow.ToString("O")
+        };
+
+    private static ClaimCheckReference EnsureCreatedAt(ClaimCheckReference reference) =>
+        reference.CreatedAt == null ? reference with { CreatedAt = DateTime.UtcNow } : reference;
+
+    private sealed record StreamInfo(Stream Stream, string ContentType, long? Length, bool ShouldDispose);
+
     private sealed class TempFile : IAsyncDisposable
     {
-        private readonly string _path;
         public FileStream Stream { get; }
 
-        private TempFile(string path, FileStream stream)
+        private TempFile(FileStream stream)
         {
-            _path = path;
             Stream = stream;
         }
 
-        public static Task<TempFile> CreateAsync(CancellationToken ct)
+        public static Task<TempFile> CreateAsync()
         {
             var path = Path.Combine(Path.GetTempPath(), $"mongobus-claimcheck-{Guid.NewGuid():N}.json");
             var stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
-            return Task.FromResult(new TempFile(path, stream));
+            return Task.FromResult(new TempFile(stream));
         }
 
         public ValueTask DisposeAsync()

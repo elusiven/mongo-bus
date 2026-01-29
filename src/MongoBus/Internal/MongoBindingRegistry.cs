@@ -15,11 +15,18 @@ public sealed class MongoBindingRegistry : ITopologyManager
 
     public Task BindAsync(string endpointId, string typeId, CancellationToken ct = default)
     {
-        var filter = Builders<Binding>.Filter.Where(x => x.EndpointId == endpointId && x.Topic == typeId);
-        var update = Builders<Binding>.Update
+        return _bindings.UpdateOneAsync(
+            BuildFilter(endpointId, typeId),
+            BuildUpdate(endpointId, typeId),
+            new UpdateOptions { IsUpsert = true },
+            ct);
+    }
+
+    private static FilterDefinition<Binding> BuildFilter(string endpointId, string typeId) =>
+        Builders<Binding>.Filter.Where(x => x.EndpointId == endpointId && x.Topic == typeId);
+
+    private static UpdateDefinition<Binding> BuildUpdate(string endpointId, string typeId) =>
+        Builders<Binding>.Update
             .SetOnInsert(x => x.EndpointId, endpointId)
             .SetOnInsert(x => x.Topic, typeId);
-
-        return _bindings.UpdateOneAsync(filter, update, new UpdateOptions { IsUpsert = true }, ct);
-    }
 }
