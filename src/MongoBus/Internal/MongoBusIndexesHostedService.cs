@@ -22,24 +22,8 @@ public sealed class MongoBusIndexesHostedService : IHostedService
         var inbox = _db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         var bindings = _db.GetCollection<Binding>(MongoBusConstants.BindingsCollectionName);
 
-        var inboxIndex = new CreateIndexModel<InboxMessage>(
-            Builders<InboxMessage>.IndexKeys
-                .Ascending(x => x.EndpointId)
-                .Ascending(x => x.Status)
-                .Ascending(x => x.VisibleUtc)
-                .Ascending(x => x.LockedUntilUtc));
-
-        var inboxCreatedIndex = new CreateIndexModel<InboxMessage>(
-            Builders<InboxMessage>.IndexKeys
-                .Ascending(x => x.CreatedUtc),
-            new CreateIndexOptions { ExpireAfter = _options.ProcessedMessageTtl });
-
-        var bindingUnique = new CreateIndexModel<Binding>(
-            Builders<Binding>.IndexKeys.Ascending(x => x.Topic).Ascending(x => x.EndpointId),
-            new CreateIndexOptions { Unique = true });
-
-        await inbox.Indexes.CreateManyAsync(new[] { inboxIndex, inboxCreatedIndex }, cancellationToken: ct);
-        await bindings.Indexes.CreateOneAsync(bindingUnique, cancellationToken: ct);
+        await inbox.Indexes.CreateManyAsync(BuildInboxIndexes(), cancellationToken: ct);
+        await bindings.Indexes.CreateOneAsync(BuildBindingIndex(), cancellationToken: ct);
 
         // GridFS TTL (optional but recommended if using GridFS claim check)
         await CreateGridFsTtlIndexAsync(ct);
@@ -68,4 +52,26 @@ public sealed class MongoBusIndexesHostedService : IHostedService
     }
 
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+
+    private IEnumerable<CreateIndexModel<InboxMessage>> BuildInboxIndexes()
+    {
+        var inboxIndex = new CreateIndexModel<InboxMessage>(
+            Builders<InboxMessage>.IndexKeys
+                .Ascending(x => x.EndpointId)
+                .Ascending(x => x.Status)
+                .Ascending(x => x.VisibleUtc)
+                .Ascending(x => x.LockedUntilUtc));
+
+        var inboxCreatedIndex = new CreateIndexModel<InboxMessage>(
+            Builders<InboxMessage>.IndexKeys
+                .Ascending(x => x.CreatedUtc),
+            new CreateIndexOptions { ExpireAfter = _options.ProcessedMessageTtl });
+
+        return new[] { inboxIndex, inboxCreatedIndex };
+    }
+
+    private static CreateIndexModel<Binding> BuildBindingIndex() =>
+        new(
+            Builders<Binding>.IndexKeys.Ascending(x => x.Topic).Ascending(x => x.EndpointId),
+            new CreateIndexOptions { Unique = true });
 }

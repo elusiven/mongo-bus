@@ -38,116 +38,18 @@ public sealed class MongoMessageBus(
         activity?.SetTag("messaging.destination.name", typeId);
         activity?.SetTag("messaging.operation", "publish");
 
-        var finalSource = source ?? options.DefaultSource ?? "urn:mongobus:unknown";
-        var context = BusContext.Current;
-        var finalCorrelationId = correlationId ?? context?.CorrelationId ?? Guid.NewGuid().ToString("N");
-        var finalCausationId = causationId ?? context?.MessageId.ToString();
-
-        var publishContext = new PublishContext<T>(
-            typeId,
-            data,
-            finalSource,
-            subject,
-            id,
-            timeUtc,
-            deliverAt,
-            finalCorrelationId,
-            finalCausationId)
-        {
-            UseClaimCheck = useClaimCheck
-        };
-
+        var publishContext = BuildPublishContext(typeId, data, source, subject, id, timeUtc, deliverAt, correlationId, causationId, useClaimCheck);
         var interceptorList = interceptors.ToList();
-        
-        async Task CorePublishAsync()
-        {
-            var topic = publishContext.TypeId;
-            var routes = await _bindings.Find(x => x.Topic == topic).ToListAsync(ct);
-            
-            if (routes.Count == 0) return;
-
-            var claimCheckDecision = await claimCheck.TryStoreAsync(publishContext, ct);
-
-            string payload;
-            string cloudEventId;
-            if (claimCheckDecision.IsClaimCheck)
-            {
-                var claimContext = new PublishContext<ClaimCheckReference>(
-                    publishContext.TypeId,
-                    claimCheckDecision.Reference!,
-                    publishContext.Source,
-                    publishContext.Subject,
-                    publishContext.Id,
-                    publishContext.TimeUtc,
-                    publishContext.DeliverAt,
-                    publishContext.CorrelationId,
-                    publishContext.CausationId)
-                {
-                    DataContentType = ClaimCheckConstants.ContentType,
-                    UseClaimCheck = publishContext.UseClaimCheck
-                };
-
-                var claimEnvelope = enveloper.CreateEnvelope(claimContext);
-                payload = serializer.Serialize(claimEnvelope);
-                cloudEventId = claimEnvelope.Id;
-            }
-            else
-            {
-                var envelope = enveloper.CreateEnvelope(publishContext);
-                payload = serializer.Serialize(envelope);
-                cloudEventId = envelope.Id;
-            }
-
-            var now = DateTime.UtcNow;
-
-            var docs = routes.Select(r => new InboxMessage
-            {
-                EndpointId = r.EndpointId,
-                Topic = topic,
-                TypeId = publishContext.TypeId,
-                PayloadJson = payload,
-                CreatedUtc = now,
-                VisibleUtc = publishContext.DeliverAt ?? now,
-                Attempt = 0,
-                Status = "Pending",
-                CorrelationId = publishContext.CorrelationId,
-                CausationId = publishContext.CausationId,
-                CloudEventId = cloudEventId
-            }).ToList();
-
-            if (docs.Count == 1)
-            {
-                await _inbox.InsertOneAsync(docs[0], cancellationToken: ct);
-            }
-            else
-            {
-                await _inbox.InsertManyAsync(docs, cancellationToken: ct);
-            }
-        }
 
         try
         {
             if (interceptorList.Count == 0)
             {
-                await CorePublishAsync();
+                await CorePublishAsync(publishContext, ct);
             }
             else
             {
-                int index = 0;
-                async Task Next()
-                {
-                    if (index < interceptorList.Count)
-                    {
-                        var interceptor = interceptorList[index++];
-                        await interceptor.OnPublishAsync(publishContext, Next, ct);
-                    }
-                    else
-                    {
-                        await CorePublishAsync();
-                    }
-                }
-
-                await Next();
+                await InvokeWithInterceptorsAsync(interceptorList, publishContext, () => CorePublishAsync(publishContext, ct), ct);
             }
         }
         catch (Exception ex)
@@ -161,5 +63,123 @@ public sealed class MongoMessageBus(
             }
             throw;
         }
+    }
+
+    private PublishContext<T> BuildPublishContext<T>(
+        string typeId,
+        T data,
+        string? source,
+        string? subject,
+        string? id,
+        DateTime? timeUtc,
+        DateTime? deliverAt,
+        string? correlationId,
+        string? causationId,
+        bool? useClaimCheck)
+    {
+        var finalSource = source ?? options.DefaultSource ?? "urn:mongobus:unknown";
+        var context = BusContext.Current;
+        var finalCorrelationId = correlationId ?? context?.CorrelationId ?? Guid.NewGuid().ToString("N");
+        var finalCausationId = causationId ?? context?.MessageId.ToString();
+
+        return new PublishContext<T>(
+            typeId,
+            data,
+            finalSource,
+            subject,
+            id,
+            timeUtc,
+            deliverAt,
+            finalCorrelationId,
+            finalCausationId)
+        {
+            UseClaimCheck = useClaimCheck
+        };
+    }
+
+    private async Task CorePublishAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
+    {
+        var topic = publishContext.TypeId;
+        var routes = await _bindings.Find(x => x.Topic == topic).ToListAsync(ct);
+
+        if (routes.Count == 0) return;
+
+        var (payload, cloudEventId) = await BuildPayloadAsync(publishContext, ct);
+        var now = DateTime.UtcNow;
+
+        var docs = routes.Select(r => new InboxMessage
+        {
+            EndpointId = r.EndpointId,
+            Topic = topic,
+            TypeId = publishContext.TypeId,
+            PayloadJson = payload,
+            CreatedUtc = now,
+            VisibleUtc = publishContext.DeliverAt ?? now,
+            Attempt = 0,
+            Status = InboxStatus.Pending,
+            CorrelationId = publishContext.CorrelationId,
+            CausationId = publishContext.CausationId,
+            CloudEventId = cloudEventId
+        }).ToList();
+
+        if (docs.Count == 1)
+        {
+            await _inbox.InsertOneAsync(docs[0], cancellationToken: ct);
+        }
+        else
+        {
+            await _inbox.InsertManyAsync(docs, cancellationToken: ct);
+        }
+    }
+
+    private async Task<(string Payload, string CloudEventId)> BuildPayloadAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
+    {
+        var claimCheckDecision = await claimCheck.TryStoreAsync(publishContext, ct);
+        if (!claimCheckDecision.IsClaimCheck)
+        {
+            var envelope = enveloper.CreateEnvelope(publishContext);
+            return (serializer.Serialize(envelope), envelope.Id);
+        }
+
+        var claimContext = new PublishContext<ClaimCheckReference>(
+            publishContext.TypeId,
+            claimCheckDecision.Reference!,
+            publishContext.Source,
+            publishContext.Subject,
+            publishContext.Id,
+            publishContext.TimeUtc,
+            publishContext.DeliverAt,
+            publishContext.CorrelationId,
+            publishContext.CausationId)
+        {
+            DataContentType = ClaimCheckConstants.ContentType,
+            UseClaimCheck = publishContext.UseClaimCheck
+        };
+
+        var claimEnvelope = enveloper.CreateEnvelope(claimContext);
+        return (serializer.Serialize(claimEnvelope), claimEnvelope.Id);
+    }
+
+    private static async Task InvokeWithInterceptorsAsync<T>(
+        IReadOnlyList<IPublishInterceptor> interceptorList,
+        PublishContext<T> context,
+        Func<Task> handler,
+        CancellationToken ct)
+    {
+        var index = 0;
+        async Task Next()
+        {
+            if (index < interceptorList.Count)
+            {
+                var interceptor = interceptorList[index++];
+                await interceptor.OnPublishAsync(context, Next, ct);
+            }
+            else
+            {
+                await handler();
+            }
+        }
+
+        await Next();
     }
 }
