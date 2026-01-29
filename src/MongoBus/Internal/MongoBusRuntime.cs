@@ -10,11 +10,12 @@ using MongoDB.Driver;
 
 namespace MongoBus.Internal;
 
-public sealed class MongoBusRuntime : BackgroundService
+internal sealed class MongoBusRuntime : BackgroundService
 {
     private readonly IMongoCollection<InboxMessage> _inbox;
     private readonly ITopologyManager _topology;
     private readonly IMessageDispatcher _dispatcher;
+    private readonly IBatchMessageDispatcher _batchDispatcher;
     private readonly IMessagePump _pump;
     private readonly ILogger<MongoBusRuntime> _log;
     private readonly IReadOnlyList<IConsumerDefinition> _definitions;
@@ -24,12 +25,14 @@ public sealed class MongoBusRuntime : BackgroundService
         IEnumerable<IConsumerDefinition> definitions,
         ITopologyManager topology,
         IMessageDispatcher dispatcher,
+        IBatchMessageDispatcher batchDispatcher,
         IMessagePump pump,
         ILogger<MongoBusRuntime> log)
     {
         _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         _topology = topology;
         _dispatcher = dispatcher;
+        _batchDispatcher = batchDispatcher;
         _pump = pump;
         _log = log;
         _definitions = definitions.ToList();
@@ -46,11 +49,19 @@ public sealed class MongoBusRuntime : BackgroundService
 
         await BindTopologyAsync(stoppingToken);
 
-        _ = DispatchRegistrationBuilder.BuildDispatchMap(_definitions);
-        var endpointCfg = DispatchRegistrationBuilder.BuildEndpointConfigs(_definitions);
+        var batchDefinitions = _definitions.OfType<IBatchConsumerDefinition>().ToList();
+        var singleDefinitions = _definitions.Where(d => d is not IBatchConsumerDefinition).ToList();
 
-        var pumps = endpointCfg.Values.Select(cfg => RunEndpointPumpAsync(cfg, stoppingToken)).ToArray();
-        await Task.WhenAll(pumps);
+        _ = DispatchRegistrationBuilder.BuildDispatchMap(singleDefinitions);
+        _ = DispatchRegistrationBuilder.BuildBatchDispatchMap(batchDefinitions);
+
+        var endpointCfg = DispatchRegistrationBuilder.BuildEndpointConfigs(singleDefinitions);
+        var batchCfg = DispatchRegistrationBuilder.BuildBatchRuntimeConfigs(batchDefinitions);
+
+        var singlePumps = endpointCfg.Values.Select(cfg => RunEndpointPumpAsync(cfg, stoppingToken)).ToArray();
+        var batchPumps = batchCfg.Select(cfg => RunBatchPumpAsync(cfg, stoppingToken)).ToArray();
+
+        await Task.WhenAll(singlePumps.Concat(batchPumps));
     }
 
     private async Task BindTopologyAsync(CancellationToken ct)
@@ -85,7 +96,7 @@ public sealed class MongoBusRuntime : BackgroundService
         {
             while (!ct.IsCancellationRequested)
             {
-                var msg = await _pump.TryLockOneAsync(cfg.EndpointId, cfg.LockTime, pumpId, ct);
+                var msg = await _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, pumpId, ct);
                 if (msg is null)
                 {
                     await Task.Delay(50, ct);
@@ -98,6 +109,104 @@ public sealed class MongoBusRuntime : BackgroundService
         finally
         {
             writer.TryComplete();
+        }
+    }
+
+    private async Task RunBatchPumpAsync(BatchRuntimeConfig cfg, CancellationToken ct)
+    {
+        var pumpId = $"{Environment.MachineName}:{Guid.NewGuid():N}:{cfg.EndpointId}:{cfg.TypeId}";
+        _log.LogInformation(
+            "Starting batch consumer endpoint '{Endpoint}' type '{Type}' concurrency={C} batch={Min}-{Max} maxWait={MaxWait} idleWait={IdleWait}",
+            cfg.EndpointId,
+            cfg.TypeId,
+            cfg.Concurrency,
+            cfg.Options.MinBatchSize,
+            cfg.Options.MaxBatchSize,
+            cfg.Options.MaxBatchWaitTime,
+            cfg.Options.MaxBatchIdleTime);
+
+        var workers = Enumerable.Range(0, cfg.Concurrency)
+            .Select(_ => BatchWorkerLoopAsync(cfg, pumpId, ct))
+            .ToArray();
+
+        await Task.WhenAll(workers);
+    }
+
+    private async Task BatchWorkerLoopAsync(BatchRuntimeConfig cfg, string pumpId, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var batchStart = DateTime.UtcNow;
+            var firstMsg = await _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
+            if (firstMsg is null)
+            {
+                await Task.Delay(50, ct);
+                continue;
+            }
+
+            var messages = new List<InboxMessage> { firstMsg };
+            var lastReceived = DateTime.UtcNow;
+
+            while (messages.Count < cfg.Options.MaxBatchSize)
+            {
+                var now = DateTime.UtcNow;
+                var elapsed = now - batchStart;
+                var idle = now - lastReceived;
+
+                if (elapsed >= cfg.Options.MaxBatchWaitTime)
+                    break;
+
+                if (messages.Count >= cfg.Options.MinBatchSize && idle >= cfg.Options.MaxBatchIdleTime)
+                    break;
+
+                var next = await _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
+                if (next is null)
+                {
+                    await Task.Delay(20, ct);
+                    continue;
+                }
+
+                messages.Add(next);
+                lastReceived = DateTime.UtcNow;
+            }
+
+            await DispatchBatchAsync(cfg, messages, batchStart, ct);
+        }
+    }
+
+    private async Task DispatchBatchAsync(BatchRuntimeConfig cfg, IReadOnlyList<InboxMessage> messages, DateTime batchStart, CancellationToken ct)
+    {
+        try
+        {
+            var ctxList = new List<ConsumeContext>(messages.Count);
+            var filteredMessages = new List<InboxMessage>(messages.Count);
+
+            foreach (var msg in messages)
+            {
+                using var doc = JsonDocument.Parse(msg.PayloadJson);
+                var root = doc.RootElement;
+
+                var ctx = BuildConsumeContext(msg, root);
+
+                if (cfg.IdempotencyEnabled && !string.IsNullOrEmpty(ctx.CloudEventId))
+                {
+                    var shouldSkip = await TrySkipIdempotentAsync(cfg.EndpointId, msg, ctx.CloudEventId, ct);
+                    if (shouldSkip) continue;
+                }
+
+                filteredMessages.Add(msg);
+                ctxList.Add(ctx);
+            }
+
+            if (filteredMessages.Count == 0)
+                return;
+
+            var batchContext = new BatchConsumeContext(cfg.EndpointId, cfg.TypeId, ctxList, batchStart, DateTime.UtcNow);
+            await _batchDispatcher.DispatchBatchAsync(filteredMessages, batchContext, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Unexpected error in BatchWorkerLoop for endpoint {Endpoint} type {Type}", cfg.EndpointId, cfg.TypeId);
         }
     }
 

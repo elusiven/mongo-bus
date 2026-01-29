@@ -10,6 +10,7 @@ A MongoDB-backed message bus for .NET using CloudEvents for polyglot interop.
 - **CloudEvents Compliance**: Messages are wrapped in CloudEvents-compliant envelopes for standardized polyglot interop.
 - **Optimized Performance**: Uses cached delegates for message dispatching instead of slow reflection on every message.
 - **Competing Consumers**: Native support for horizontal scaling; multiple instances can process messages in parallel without duplicates.
+- **Batch Consumers**: Process messages in configurable batches with size and time-based flush controls.
 - **Fan-out Support**: A single published message can be delivered to multiple distinct endpoints/consumers.
 - **Configurable Retries**: Exponential backoff with per-consumer configurable retry limits.
 - **Dead Letter Handling**: Failed messages that exceed retry limits are marked as `Dead` with full exception details stored for debugging.
@@ -77,6 +78,40 @@ public class OrderCreatedDefinition : ConsumerDefinition<OrderCreatedHandler, Or
     public override bool IdempotencyEnabled => true; // Enable deduplication
     public override TimeSpan LockTime => TimeSpan.FromMinutes(2);
 }
+```
+
+### Batch Consumers
+
+Batch consumers allow you to process multiple messages at once. You can control batch size, how long to wait since the *first* message, and how long to wait since the *last* message.
+
+```csharp
+public record OrderBatch(string OrderId, decimal Amount);
+
+public class OrderBatchHandler(ILogger<OrderBatchHandler> logger) : IBatchMessageHandler<OrderBatch>
+{
+    public Task HandleBatchAsync(IReadOnlyList<OrderBatch> messages, BatchConsumeContext context, CancellationToken ct)
+    {
+        logger.LogInformation("Processing batch of {Count} orders", messages.Count);
+        return Task.CompletedTask;
+    }
+}
+
+public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, OrderBatch>
+{
+    public override string TypeId => "orders.v1.batch";
+    public override string EndpointName => "order-batch";
+    public override int ConcurrencyLimit => 2;
+    public override BatchConsumerOptions BatchOptions => new()
+    {
+        MinBatchSize = 1,
+        MaxBatchSize = 100,
+        MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // from first message
+        MaxBatchIdleTime = TimeSpan.FromMilliseconds(200), // from last message
+        FailureMode = BatchFailureMode.RetryBatch
+    };
+}
+
+builder.Services.AddMongoBusBatchConsumer<OrderBatchHandler, OrderBatch, OrderBatchDefinition>();
 ```
 
 ### Registering Consumers
@@ -257,7 +292,7 @@ The dashboard provides real-time (polling) updates for:
 
 Future improvements planned for MongoBus:
 
-- [ ] **Batch Consumer**: Support for handling messages in batches with various message processing options.
+- [x] **Batch Consumer**: Support for handling messages in batches with configurable size and timing options.
 - [ ] **Message Idempotency (Outbox)**: Support for transactional outbox pattern.
 - [ ] **Distributed Transactions (SAGAs)**: Support for distributed transactions.
 - [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.

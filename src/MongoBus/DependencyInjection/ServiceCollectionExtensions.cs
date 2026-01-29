@@ -29,6 +29,16 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddMongoBusBatchConsumer<TConsumer, TMessage, TDefinition>(this IServiceCollection services)
+        where TConsumer : class, IBatchMessageHandler<TMessage>
+        where TDefinition : BatchConsumerDefinition<TConsumer, TMessage>
+    {
+        services.AddScoped<TConsumer>();
+        services.AddScoped<IBatchMessageHandler<TMessage>>(sp => sp.GetRequiredService<TConsumer>());
+        services.AddSingleton<IConsumerDefinition, TDefinition>();
+        return services;
+    }
+
     public static IServiceCollection AddMongoBusPublishInterceptor<T>(this IServiceCollection services)
         where T : class, IPublishInterceptor
     {
@@ -40,6 +50,13 @@ public static class ServiceCollectionExtensions
         where T : class, IConsumeInterceptor
     {
         services.AddScoped<IConsumeInterceptor, T>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusBatchConsumeInterceptor<T>(this IServiceCollection services)
+        where T : class, IBatchConsumeInterceptor
+    {
+        services.AddScoped<IBatchConsumeInterceptor, T>();
         return services;
     }
 
@@ -65,6 +82,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMessageBus, MongoMessageBus>();
         services.AddSingleton<ITopologyManager, MongoBindingRegistry>();
         services.AddSingleton<IMessageDispatcher, MongoMessageDispatcher>();
+        services.AddSingleton<IBatchMessageDispatcher, MongoBatchMessageDispatcher>();
         services.AddSingleton<IMessagePump, MongoMessagePump>();
         services.AddSingleton<ICloudEventEnveloper, CloudEventEnveloper>();
         services.AddSingleton<ICloudEventSerializer, CloudEventSerializer>();

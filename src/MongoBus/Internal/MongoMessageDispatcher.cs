@@ -33,8 +33,9 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
         _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         _log = log;
         _claimCheck = claimCheck;
-        _dispatchMap = DispatchRegistrationBuilder.BuildDispatchMap(definitions);
-        _maxAttemptsMap = definitions
+        var singleDefinitions = definitions.Where(d => d is not IBatchConsumerDefinition).ToList();
+        _dispatchMap = DispatchRegistrationBuilder.BuildDispatchMap(singleDefinitions);
+        _maxAttemptsMap = singleDefinitions
             .GroupBy(d => d.EndpointName)
             .ToDictionary(g => g.Key, g => g.Max(d => d.MaxAttempts));
     }

@@ -20,6 +20,7 @@ services.AddMongoBus(opt =>
 });
 
 services.AddMongoBusConsumer<MyHandler, MyMessage, MyDefinition>();
+services.AddMongoBusBatchConsumer<MyBatchHandler, MyMessage, MyBatchDefinition>();
 services.AddMongoBusInMemoryClaimCheck();
 
 var sp = services.BuildServiceProvider();
@@ -28,6 +29,28 @@ await bus.PublishAsync("my.message", new MyMessage());
 ```
 
 For more information visit project github
+
+## Batch consumers
+
+```csharp
+public class MyBatchHandler : IBatchMessageHandler<MyMessage>
+{
+    public Task HandleBatchAsync(IReadOnlyList<MyMessage> messages, BatchConsumeContext context, CancellationToken ct)
+        => Task.CompletedTask;
+}
+
+public class MyBatchDefinition : BatchConsumerDefinition<MyBatchHandler, MyMessage>
+{
+    public override string TypeId => "my.message.batch";
+    public override BatchConsumerOptions BatchOptions => new()
+    {
+        MinBatchSize = 5,
+        MaxBatchSize = 100,
+        MaxBatchWaitTime = TimeSpan.FromSeconds(2),
+        MaxBatchIdleTime = TimeSpan.FromMilliseconds(200)
+    };
+}
+```
 
 ## Claim check providers
 
