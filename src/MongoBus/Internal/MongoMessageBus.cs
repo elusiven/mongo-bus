@@ -3,6 +3,7 @@ using System.Text.Json;
 using MongoBus.Abstractions;
 using MongoBus.DependencyInjection;
 using MongoBus.Infrastructure;
+using MongoBus.Internal.ClaimCheck;
 using MongoBus.Models;
 using MongoDB.Driver;
 
@@ -13,6 +14,7 @@ public sealed class MongoMessageBus(
     MongoBusOptions options,
     ICloudEventEnveloper enveloper,
     ICloudEventSerializer serializer,
+    IClaimCheckManager claimCheck,
     IEnumerable<IPublishInterceptor> interceptors) : IMessageBus
 {
     private readonly IMongoCollection<InboxMessage> _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
@@ -28,6 +30,7 @@ public sealed class MongoMessageBus(
         DateTime? deliverAt = null,
         string? correlationId = null,
         string? causationId = null,
+        bool? useClaimCheck = null,
         CancellationToken ct = default)
     {
         using var activity = MongoBusDiagnostics.ActivitySource.StartActivity($"{typeId} publish", ActivityKind.Producer);
@@ -49,7 +52,10 @@ public sealed class MongoMessageBus(
             timeUtc,
             deliverAt,
             finalCorrelationId,
-            finalCausationId);
+            finalCausationId)
+        {
+            UseClaimCheck = useClaimCheck
+        };
 
         var interceptorList = interceptors.ToList();
         
@@ -60,10 +66,39 @@ public sealed class MongoMessageBus(
             
             if (routes.Count == 0) return;
 
-            var envelope = enveloper.CreateEnvelope(publishContext);
+            var claimCheckDecision = await claimCheck.TryStoreAsync(publishContext, ct);
+
+            string payload;
+            string cloudEventId;
+            if (claimCheckDecision.IsClaimCheck)
+            {
+                var claimContext = new PublishContext<ClaimCheckReference>(
+                    publishContext.TypeId,
+                    claimCheckDecision.Reference!,
+                    publishContext.Source,
+                    publishContext.Subject,
+                    publishContext.Id,
+                    publishContext.TimeUtc,
+                    publishContext.DeliverAt,
+                    publishContext.CorrelationId,
+                    publishContext.CausationId)
+                {
+                    DataContentType = ClaimCheckConstants.ContentType,
+                    UseClaimCheck = publishContext.UseClaimCheck
+                };
+
+                var claimEnvelope = enveloper.CreateEnvelope(claimContext);
+                payload = serializer.Serialize(claimEnvelope);
+                cloudEventId = claimEnvelope.Id;
+            }
+            else
+            {
+                var envelope = enveloper.CreateEnvelope(publishContext);
+                payload = serializer.Serialize(envelope);
+                cloudEventId = envelope.Id;
+            }
 
             var now = DateTime.UtcNow;
-            var payload = serializer.Serialize(envelope);
 
             var docs = routes.Select(r => new InboxMessage
             {
@@ -77,7 +112,7 @@ public sealed class MongoMessageBus(
                 Status = "Pending",
                 CorrelationId = publishContext.CorrelationId,
                 CausationId = publishContext.CausationId,
-                CloudEventId = envelope.Id
+                CloudEventId = cloudEventId
             }).ToList();
 
             if (docs.Count == 1)

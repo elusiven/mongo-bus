@@ -12,5 +12,6 @@ public interface IMessageBus
         DateTime? deliverAt = null,
         string? correlationId = null,
         string? causationId = null,
+        bool? useClaimCheck = null,
         CancellationToken ct = default);
 }

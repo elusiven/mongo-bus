@@ -8,7 +8,7 @@ public sealed class CloudEventEnvelope<TData>
     public string Source { get; set; } = default!;
     public DateTime Time { get; set; } = DateTime.UtcNow;
     public string? Subject { get; set; }
-    public string DataContentType { get; set; } = "application/json";
+    public string? DataContentType { get; set; }
     public string? CorrelationId { get; set; }
     public string? CausationId { get; set; }
     public string? TraceParent { get; set; }

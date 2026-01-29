@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using MongoBus.Abstractions;
+using MongoBus.ClaimCheck;
 using MongoBus.Internal;
+using MongoBus.Internal.ClaimCheck;
 using MongoDB.Driver;
 
 namespace MongoBus.DependencyInjection;
@@ -22,6 +24,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMessagePump, MongoMessagePump>();
         services.AddSingleton<ICloudEventEnveloper, CloudEventEnveloper>();
         services.AddSingleton<ICloudEventSerializer, CloudEventSerializer>();
+        services.AddSingleton<IClaimCheckDataSerializer, ClaimCheckDataSerializer>();
+        services.AddSingleton<IClaimCheckProviderResolver, ClaimCheckProviderResolver>();
+        services.AddSingleton<IClaimCheckCompressor, GZipClaimCheckCompressor>();
+        services.AddSingleton<IClaimCheckCompressorProvider, ClaimCheckCompressorProvider>();
+        services.AddSingleton<IClaimCheckManager, ClaimCheckManager>();
 
         services.AddHostedService<MongoBusIndexesHostedService>();
         services.AddHostedService<MongoBusRuntime>();
@@ -50,6 +57,19 @@ public static class ServiceCollectionExtensions
         where T : class, IConsumeInterceptor
     {
         services.AddScoped<IConsumeInterceptor, T>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusInMemoryClaimCheck(this IServiceCollection services)
+    {
+        services.AddSingleton<IClaimCheckProvider, InMemoryClaimCheckProvider>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusGridFsClaimCheck(this IServiceCollection services, string bucketName = "claimcheck")
+    {
+        services.AddSingleton<IClaimCheckProvider>(sp => 
+            new MongoGridFsClaimCheckProvider(sp.GetRequiredService<IMongoDatabase>(), bucketName));
         return services;
     }
 }

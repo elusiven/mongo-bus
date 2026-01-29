@@ -29,7 +29,6 @@ public record PublishContext<T>(
     string? CorrelationId = null,
     string? CausationId = null)
 {
-    // Allow interceptors to modify some of these if needed, 
-    // though for simplicity we might keep them immutable in the record but allows returning a new one if we wanted to.
-    // For now, let's keep it simple.
+    public string? DataContentType { get; init; }
+    public bool? UseClaimCheck { get; set; }
 }

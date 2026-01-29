@@ -5,7 +5,10 @@ namespace MongoBus.Internal;
 
 internal sealed class CloudEventSerializer : ICloudEventSerializer
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
 
     public string Serialize<T>(T envelope) => JsonSerializer.Serialize(envelope, Options);
 

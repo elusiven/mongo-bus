@@ -6,6 +6,8 @@ public sealed class MongoBusOptions
     public string DatabaseName { get; set; } = "mongo_bus";
     public string? DefaultSource { get; set; }
 
+    public ClaimCheckOptions ClaimCheck { get; set; } = new();
+
     /// <summary>
     /// How long to keep messages in the inbox after they are created.
     /// This is enforced by a MongoDB TTL index. Defaults to 7 days.

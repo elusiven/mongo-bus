@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.Infrastructure;
+using MongoBus.Internal.ClaimCheck;
 using MongoBus.Models;
 using MongoDB.Driver;
 
@@ -15,6 +16,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     private readonly ICloudEventSerializer _serializer;
     private readonly IMongoCollection<InboxMessage> _inbox;
     private readonly ILogger<MongoMessageDispatcher> _log;
+    private readonly IClaimCheckManager _claimCheck;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), DispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
 
@@ -23,12 +25,14 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
         ICloudEventSerializer serializer,
         IMongoDatabase db,
         ILogger<MongoMessageDispatcher> log,
+        IClaimCheckManager claimCheck,
         IEnumerable<IConsumerDefinition> definitions)
     {
         _sp = sp;
         _serializer = serializer;
         _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         _log = log;
+        _claimCheck = claimCheck;
         _dispatchMap = BuildDispatchMap(definitions);
         _maxAttemptsMap = definitions
             .GroupBy(d => d.EndpointName)
@@ -66,7 +70,18 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
             activity?.SetTag("messaging.mongodb.endpoint", msg.EndpointId);
 
             var dataEl = root.GetProperty("data");
-            var dataObj = _serializer.Deserialize(dataEl.GetRawText(), reg.MessageClrType);
+            var dataContentType = root.TryGetProperty("dataContentType", out var dctEl) ? dctEl.GetString() : null;
+
+            object dataObj;
+            if (string.Equals(dataContentType, ClaimCheckConstants.ContentType, StringComparison.OrdinalIgnoreCase))
+            {
+                var reference = _serializer.Deserialize<ClaimCheckReference>(dataEl.GetRawText());
+                dataObj = await _claimCheck.ResolveAsync(reference, reg.MessageClrType, ct);
+            }
+            else
+            {
+                dataObj = _serializer.Deserialize(dataEl.GetRawText(), reg.MessageClrType);
+            }
 
             var consumeInterceptors = scope.ServiceProvider.GetServices<IConsumeInterceptor>().ToList();
 

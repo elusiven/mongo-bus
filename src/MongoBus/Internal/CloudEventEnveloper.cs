@@ -19,6 +19,7 @@ internal sealed class CloudEventEnveloper : ICloudEventEnveloper
             Time = context.TimeUtc ?? DateTime.UtcNow,
             CorrelationId = context.CorrelationId,
             CausationId = context.CausationId,
+            DataContentType = context.DataContentType,
             Data = context.Data
         };
 
@@ -31,3 +32,4 @@ internal sealed class CloudEventEnveloper : ICloudEventEnveloper
         return envelope;
     }
 }
+

@@ -18,6 +18,7 @@ A MongoDB-backed message bus for .NET using CloudEvents for polyglot interop.
 - **Message Correlation**: Automatic propagation of `CorrelationId` and `CausationId` across message flows for better traceability.
 - **Idempotency**: Built-in support for message deduplication at the consumer level based on CloudEvent `id`.
 - **Delayed Messages**: Support for scheduled message delivery (e.g., `PublishAsync(..., deliverAt: dateTime)`).
+- **Claim Check Pattern**: Automatically offload large message payloads to external blob storage and retrieve them on consume.
 - **Middleware Support**: Ability to plug in custom logic for publishing and consuming pipelines (Interceptors).
 - **OpenTelemetry Support**: Native integration for distributed tracing with automatic context propagation.
 - **Monitoring UI**: A dashboard to visualize message rates, failures, and dead-lettered messages.
@@ -97,6 +98,13 @@ await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-456", 10.00m),
 
 // Publish a delayed message
 await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-789", 50.00m), deliverAt: DateTime.UtcNow.AddMinutes(30));
+
+// Force claim-check even if message is small or globally disabled
+await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-000", 1.00m), useClaimCheck: true);
+
+// Note: If claim-check is enabled globally, large messages will ALWAYS use claim-check 
+// even if you pass useClaimCheck: false.
+await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-999", 999999.99m), useClaimCheck: false);
 ```
 
 ### Middleware / Interceptors
@@ -118,6 +126,80 @@ public class MyPublishInterceptor : IPublishInterceptor
 builder.Services.AddMongoBusPublishInterceptor<MyPublishInterceptor>();
 builder.Services.AddMongoBusConsumeInterceptor<MyConsumeInterceptor>();
 ```
+
+### Claim Check (Large Messages)
+
+MongoBus can automatically offload large message payloads to external blob storage (Claim Check pattern). When enabled, the bus stores a lightweight reference in MongoDB and retrieves the full payload during consumption.
+
+#### Enable Claim Check
+
+```csharp
+builder.Services.AddMongoBus(opt =>
+{
+    opt.ConnectionString = "mongodb://localhost:27017";
+    opt.DatabaseName = "MyMessageBus";
+    opt.ClaimCheck.Enabled = true;
+    opt.ClaimCheck.ThresholdBytes = 256 * 1024; // 256 KB
+    opt.ClaimCheck.ProviderName = "azure"; // or "wasabi" or a custom provider name
+    
+    // Optional: Enable automatic compression
+    opt.ClaimCheck.Compression.Enabled = true; 
+    opt.ClaimCheck.Compression.Algorithm = "gzip"; // default
+});
+```
+
+#### MongoDB GridFS
+
+```csharp
+builder.Services.AddMongoBusGridFsClaimCheck(bucketName: "my-claims");
+```
+
+#### Azure Blob Storage
+
+```csharp
+builder.Services.AddMongoBusClaimCheckAzureBlob(opt =>
+{
+    opt.ConnectionString = "<azure-blob-connection-string>";
+    opt.ContainerName = "mongobus-claimcheck";
+    opt.BlobPrefix = "payloads/";
+});
+```
+
+#### S3-Compatible Storage (Wasabi, AWS S3, MinIO)
+
+```csharp
+builder.Services.AddMongoBusClaimCheckS3(opt =>
+{
+    opt.AccessKey = "<access-key>";
+    opt.SecretKey = "<secret-key>";
+    opt.ServiceUrl = "https://s3.us-east-1.wasabisys.com"; // or AWS S3 URL
+    opt.BucketName = "mongobus-claimcheck";
+    opt.KeyPrefix = "payloads/";
+    opt.Region = "us-east-1";
+});
+```
+
+Or use the Wasabi-specific helper:
+
+```csharp
+builder.Services.AddMongoBusClaimCheckWasabi(opt =>
+{
+    opt.AccessKey = "<access-key>";
+    opt.SecretKey = "<secret-key>";
+    opt.ServiceUrl = "https://s3.us-east-1.wasabisys.com";
+    opt.BucketName = "mongobus-claimcheck";
+});
+```
+
+#### Custom Provider
+
+Implement `IClaimCheckProvider` and register it:
+
+```csharp
+builder.Services.AddMongoBusClaimCheckProvider<MyClaimCheckProvider>();
+```
+
+> Note: If your handler uses `Stream` as the message type, the stream is passed through directly and must be disposed by the handler.
 
 ### OpenTelemetry
 
@@ -161,7 +243,6 @@ The dashboard provides real-time (polling) updates for:
 Future improvements planned for MongoBus:
 
 - [ ] **Batch Consumer**: Support for handling messages in batches with various message processing options.
-- [ ] **ClaimCheck Pattern**: Support for handling large size messages, where large data part of messages is stored outside of mongo and is automatically written and read when publishing/consuming message.
 - [ ] **Message Idempotency (Outbox)**: Support for transactional outbox pattern.
 - [ ] **Distributed Transactions (SAGAs)**: Support for distributed transactions.
 - [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.
