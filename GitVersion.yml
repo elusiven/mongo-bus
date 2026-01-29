@@ -1,5 +1,8 @@
 mode: ContinuousDeployment
 commit-message-incrementing: Enabled
+major-version-bump-message: '\+semver:(major|breaking)'
+minor-version-bump-message: '\+semver:minor'
+patch-version-bump-message: '\+semver:patch'
 branches:
   main:
     regex: ^master$|^main$
