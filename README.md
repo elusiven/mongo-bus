@@ -68,7 +68,7 @@ public class OrderCreatedHandler(ILogger<OrderCreatedHandler> logger) : IMessage
 public class OrderCreatedDefinition : ConsumerDefinition<OrderCreatedHandler, OrderCreated>
 {
     public override string TypeId => "orders.v1.created"; // CloudEvent type
-    public override string EndpointName => "order-processing"; // MongoDB collection/queue name
+    public override string EndpointName => "order-processing"; // MongoDB collection/queue name (Optional - set to consumer's name by default)
     
     // Optional overrides:
     public override int ConcurrencyLimit => 10;
