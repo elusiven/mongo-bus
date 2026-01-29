@@ -11,28 +11,10 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddMongoBus(this IServiceCollection services, Action<MongoBusOptions> configure)
     {
-        var opt = new MongoBusOptions();
-        configure(opt);
+        var opt = BuildOptions(configure);
 
-        services.AddSingleton(opt);
-        services.AddSingleton<IMongoClient>(_ => new MongoClient(opt.ConnectionString));
-        services.AddSingleton(sp => sp.GetRequiredService<IMongoClient>().GetDatabase(opt.DatabaseName));
-
-        services.AddSingleton<IMessageBus, MongoMessageBus>();
-        services.AddSingleton<ITopologyManager, MongoBindingRegistry>();
-        services.AddSingleton<IMessageDispatcher, MongoMessageDispatcher>();
-        services.AddSingleton<IMessagePump, MongoMessagePump>();
-        services.AddSingleton<ICloudEventEnveloper, CloudEventEnveloper>();
-        services.AddSingleton<ICloudEventSerializer, CloudEventSerializer>();
-        services.AddSingleton<IClaimCheckDataSerializer, ClaimCheckDataSerializer>();
-        services.AddSingleton<IClaimCheckProviderResolver, ClaimCheckProviderResolver>();
-        services.AddSingleton<IClaimCheckCompressor, GZipClaimCheckCompressor>();
-        services.AddSingleton<IClaimCheckCompressorProvider, ClaimCheckCompressorProvider>();
-        services.AddSingleton<IClaimCheckManager, ClaimCheckManager>();
-
-        services.AddHostedService<MongoBusIndexesHostedService>();
-        services.AddHostedService<MongoBusRuntime>();
-        services.AddHostedService<ClaimCheckCleanupService>();
+        RegisterCoreServices(services, opt);
+        RegisterHostedServices(services);
 
         return services;
     }
@@ -72,5 +54,38 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IClaimCheckProvider>(sp => 
             new MongoGridFsClaimCheckProvider(sp.GetRequiredService<IMongoDatabase>(), bucketName));
         return services;
+    }
+
+    private static MongoBusOptions BuildOptions(Action<MongoBusOptions> configure)
+    {
+        var opt = new MongoBusOptions();
+        configure(opt);
+        return opt;
+    }
+
+    private static void RegisterCoreServices(IServiceCollection services, MongoBusOptions opt)
+    {
+        services.AddSingleton(opt);
+        services.AddSingleton<IMongoClient>(_ => new MongoClient(opt.ConnectionString));
+        services.AddSingleton(sp => sp.GetRequiredService<IMongoClient>().GetDatabase(opt.DatabaseName));
+
+        services.AddSingleton<IMessageBus, MongoMessageBus>();
+        services.AddSingleton<ITopologyManager, MongoBindingRegistry>();
+        services.AddSingleton<IMessageDispatcher, MongoMessageDispatcher>();
+        services.AddSingleton<IMessagePump, MongoMessagePump>();
+        services.AddSingleton<ICloudEventEnveloper, CloudEventEnveloper>();
+        services.AddSingleton<ICloudEventSerializer, CloudEventSerializer>();
+        services.AddSingleton<IClaimCheckDataSerializer, ClaimCheckDataSerializer>();
+        services.AddSingleton<IClaimCheckProviderResolver, ClaimCheckProviderResolver>();
+        services.AddSingleton<IClaimCheckCompressor, GZipClaimCheckCompressor>();
+        services.AddSingleton<IClaimCheckCompressorProvider, ClaimCheckCompressorProvider>();
+        services.AddSingleton<IClaimCheckManager, ClaimCheckManager>();
+    }
+
+    private static void RegisterHostedServices(IServiceCollection services)
+    {
+        services.AddHostedService<MongoBusIndexesHostedService>();
+        services.AddHostedService<MongoBusRuntime>();
+        services.AddHostedService<ClaimCheckCleanupService>();
     }
 }

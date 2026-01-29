@@ -9,26 +9,21 @@ public static class ClaimCheckServiceCollectionExtensions
     public static IServiceCollection AddMongoBusClaimCheckProvider<TProvider>(this IServiceCollection services)
         where TProvider : class, IClaimCheckProvider
     {
-        services.AddSingleton<IClaimCheckProvider, TProvider>();
-        return services;
+        return AddClaimCheckProvider<TProvider>(services);
     }
 
     public static IServiceCollection AddMongoBusClaimCheckAzureBlob(this IServiceCollection services, Action<AzureBlobClaimCheckOptions> configure)
     {
-        var options = new AzureBlobClaimCheckOptions();
-        configure(options);
+        var options = BuildOptions(configure);
         services.AddSingleton(options);
-        services.AddSingleton<IClaimCheckProvider, AzureBlobClaimCheckProvider>();
-        return services;
+        return AddClaimCheckProvider<AzureBlobClaimCheckProvider>(services);
     }
 
     public static IServiceCollection AddMongoBusClaimCheckS3(this IServiceCollection services, Action<S3ClaimCheckOptions> configure)
     {
-        var options = new S3ClaimCheckOptions();
-        configure(options);
+        var options = BuildOptions(configure);
         services.AddSingleton(options);
-        services.AddSingleton<IClaimCheckProvider, S3ClaimCheckProvider>();
-        return services;
+        return AddClaimCheckProvider<S3ClaimCheckProvider>(services);
     }
 
     public static IServiceCollection AddMongoBusClaimCheckWasabi(this IServiceCollection services, Action<S3ClaimCheckOptions> configure)
@@ -38,5 +33,19 @@ public static class ClaimCheckServiceCollectionExtensions
             opt.ProviderName = "wasabi";
             configure(opt);
         });
+    }
+
+    private static IServiceCollection AddClaimCheckProvider<TProvider>(IServiceCollection services)
+        where TProvider : class, IClaimCheckProvider
+    {
+        services.AddSingleton<IClaimCheckProvider, TProvider>();
+        return services;
+    }
+
+    private static TOptions BuildOptions<TOptions>(Action<TOptions> configure) where TOptions : new()
+    {
+        var options = new TOptions();
+        configure(options);
+        return options;
     }
 }
