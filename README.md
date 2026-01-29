@@ -160,7 +160,9 @@ The dashboard provides real-time (polling) updates for:
 
 Future improvements planned for MongoBus:
 
+- [ ] **Batch Consumer**: Support for handling messages in batches with various message processing options.
 - [ ] **Message Idempotency (Outbox)**: Support for transactional outbox pattern.
+- [ ] **Distributed Transactions (SAGAs)**: Support for distributed transactions.
 - [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.
 
 ## Samples
