@@ -11,6 +11,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/elusiven/mongo-bus</RepositoryUrl>
     <PackageProjectUrl>https://github.com/elusiven/mongo-bus</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,5 +21,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MongoBus\MongoBus.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>
