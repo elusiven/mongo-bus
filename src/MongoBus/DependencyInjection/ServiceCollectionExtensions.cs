@@ -127,6 +127,8 @@ public static class ServiceCollectionExtensions
 
     private static void RegisterHostedServices(IServiceCollection services)
     {
+        services.AddSingleton<MongoBusValidationHostedService>();
+        services.AddHostedService(sp => sp.GetRequiredService<MongoBusValidationHostedService>());
         services.AddHostedService<MongoBusIndexesHostedService>();
         services.AddHostedService<MongoBusRuntime>();
         services.AddHostedService<ClaimCheckCleanupService>();

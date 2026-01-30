@@ -19,6 +19,8 @@ services.AddMongoBus(opt =>
     opt.DatabaseName = "mongo_bus";
 });
 
+// MongoBus validates configuration at startup and throws if invalid.
+
 services.AddMongoBusConsumer<MyHandler, MyMessage, MyDefinition>();
 services.AddMongoBusBatchConsumer<MyBatchHandler, MyMessage, MyBatchDefinition>();
 services.AddMongoBusInMemoryClaimCheck();

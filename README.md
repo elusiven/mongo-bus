@@ -48,6 +48,8 @@ builder.Services.AddMongoBus(opt =>
     opt.DefaultSource = "my-awesome-service"; // Optional: set a default source for all publishes
     opt.ProcessedMessageTtl = TimeSpan.FromDays(14); // Optional: change cleanup policy
 });
+
+// MongoBus validates configuration at startup and throws if invalid.
 ```
 
 ### Defining Messages and Handlers
