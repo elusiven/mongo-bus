@@ -340,6 +340,9 @@ Check out the `samples/MongoBus.Sample` project for a complete working example s
 - Custom endpoint naming.
 - Publishing and consuming flow.
 - Structured logging.
+- Batch consumers, grouping, and backpressure.
+- Observers (publish/consume/batch) and interceptors.
+- Claim-check and delayed delivery.
 
 ## Testing
 
