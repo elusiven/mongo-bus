@@ -47,7 +47,8 @@ public class MyBatchDefinition : BatchConsumerDefinition<MyBatchHandler, MyMessa
         MinBatchSize = 5,
         MaxBatchSize = 100,
         MaxBatchWaitTime = TimeSpan.FromSeconds(2),
-        MaxBatchIdleTime = TimeSpan.FromMilliseconds(200)
+        MaxBatchIdleTime = TimeSpan.Zero,
+        FlushMode = BatchFlushMode.SinceFirstMessage
     };
 }
 ```

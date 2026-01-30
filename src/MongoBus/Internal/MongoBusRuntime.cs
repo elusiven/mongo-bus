@@ -153,11 +153,16 @@ internal sealed class MongoBusRuntime : BackgroundService
                 var elapsed = now - batchStart;
                 var idle = now - lastReceived;
 
-                if (elapsed >= cfg.Options.MaxBatchWaitTime)
-                    break;
-
-                if (messages.Count >= cfg.Options.MinBatchSize && idle >= cfg.Options.MaxBatchIdleTime)
-                    break;
+                if (cfg.Options.FlushMode == BatchFlushMode.SinceFirstMessage)
+                {
+                    if (elapsed >= cfg.Options.MaxBatchWaitTime)
+                        break;
+                }
+                else
+                {
+                    if (messages.Count >= cfg.Options.MinBatchSize && idle >= cfg.Options.MaxBatchIdleTime)
+                        break;
+                }
 
                 var next = await _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
                 if (next is null)

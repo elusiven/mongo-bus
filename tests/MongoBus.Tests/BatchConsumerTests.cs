@@ -38,7 +38,8 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             MinBatchSize = 1,
             MaxBatchSize = 3,
             MaxBatchWaitTime = TimeSpan.FromSeconds(2),
-            MaxBatchIdleTime = TimeSpan.FromMilliseconds(200)
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage
         };
     }
 
@@ -61,7 +62,32 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             MinBatchSize = 5,
             MaxBatchSize = 10,
             MaxBatchWaitTime = TimeSpan.FromSeconds(1),
-            MaxBatchIdleTime = TimeSpan.FromMilliseconds(200)
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage
+        };
+    }
+
+    public sealed class IdleBatchHandler : IBatchMessageHandler<BatchMessage>
+    {
+        public static readonly ConcurrentQueue<int> BatchSizes = new();
+
+        public Task HandleBatchAsync(IReadOnlyList<BatchMessage> messages, BatchConsumeContext context, CancellationToken ct)
+        {
+            BatchSizes.Enqueue(messages.Count);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class IdleBatchDefinition : BatchConsumerDefinition<IdleBatchHandler, BatchMessage>
+    {
+        public override string TypeId => "batch.idle";
+        public override BatchConsumerOptions BatchOptions => new()
+        {
+            MinBatchSize = 1,
+            MaxBatchSize = 10,
+            MaxBatchWaitTime = TimeSpan.Zero,
+            MaxBatchIdleTime = TimeSpan.FromMilliseconds(300),
+            FlushMode = BatchFlushMode.SinceLastMessage
         };
     }
 
@@ -158,6 +184,55 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             }
 
             var sizes = TimeoutBatchHandler.BatchSizes.ToArray();
+            sizes.Should().ContainSingle();
+            sizes[0].Should().Be(2);
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldFlushBatchOnIdleTimeSinceLastMessage()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "batch_idle_test_" + Guid.NewGuid().ToString("N");
+        });
+        services.AddMongoBusBatchConsumer<IdleBatchHandler, BatchMessage, IdleBatchDefinition>();
+
+        var sp = services.BuildServiceProvider();
+        var bus = sp.GetRequiredService<IMessageBus>();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var bindings = db.GetCollection<Binding>("bus_bindings");
+            var bindingTimeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < bindingTimeout && await bindings.CountDocumentsAsync(FilterDefinition<Binding>.Empty) == 0)
+            {
+                await Task.Delay(100);
+            }
+
+            while (IdleBatchHandler.BatchSizes.TryDequeue(out _)) { }
+
+            await bus.PublishAsync("batch.idle", new BatchMessage(1), "test-source");
+            await bus.PublishAsync("batch.idle", new BatchMessage(2), "test-source");
+
+            var timeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < timeout && IdleBatchHandler.BatchSizes.IsEmpty)
+            {
+                await Task.Delay(100);
+            }
+
+            var sizes = IdleBatchHandler.BatchSizes.ToArray();
             sizes.Should().ContainSingle();
             sizes[0].Should().Be(2);
         }

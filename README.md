@@ -105,8 +105,9 @@ public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, O
     {
         MinBatchSize = 1,
         MaxBatchSize = 100,
-        MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // from first message
-        MaxBatchIdleTime = TimeSpan.FromMilliseconds(200), // from last message
+        MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // used when FlushMode=SinceFirstMessage
+        MaxBatchIdleTime = TimeSpan.Zero,              // must be 0 when FlushMode=SinceFirstMessage
+        FlushMode = BatchFlushMode.SinceFirstMessage,
         FailureMode = BatchFailureMode.RetryBatch
     };
 }
@@ -292,7 +293,7 @@ The dashboard provides real-time (polling) updates for:
 
 Future improvements planned for MongoBus:
 
-- [x] **Batch Consumer**: Support for handling messages in batches with configurable size and timing options.
+
 - [ ] **Message Idempotency (Outbox)**: Support for transactional outbox pattern.
 - [ ] **Distributed Transactions (SAGAs)**: Support for distributed transactions.
 - [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.
