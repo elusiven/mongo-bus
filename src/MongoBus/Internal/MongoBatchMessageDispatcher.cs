@@ -51,11 +51,32 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         {
             var reg = GetRegistration(context.EndpointId, context.TypeId);
 
-            var payloads = await ResolvePayloadsAsync(messages, reg.MessageClrType, ct);
-            var typedList = CreateTypedList(reg.MessageClrType, payloads);
+            var batchItems = await ResolveBatchItemsAsync(messages, context, reg.MessageClrType, ct);
+
+            var grouped = batchItems.GroupBy(item => reg.GroupingStrategy.GetGroupKey(item.Payload, item.Context));
 
             var consumeInterceptors = scope.ServiceProvider.GetServices<IBatchConsumeInterceptor>().ToList();
-            await InvokeWithInterceptorsAsync(consumeInterceptors, () => InvokeHandlerAsync(scope, reg, typedList, context, ct), context, payloads, ct);
+            foreach (var group in grouped)
+            {
+                var groupItems = group.ToList();
+                var payloads = groupItems.Select(x => x.Payload).ToList();
+                var ctxs = groupItems.Select(x => x.Context).ToList();
+                var typedList = CreateTypedList(reg.MessageClrType, payloads);
+
+                var groupContext = context with
+                {
+                    Messages = ctxs,
+                    BatchCompletedUtc = DateTime.UtcNow,
+                    GroupKey = group.Key
+                };
+
+                await InvokeWithInterceptorsAsync(
+                    consumeInterceptors,
+                    () => InvokeHandlerAsync(scope, reg, typedList, groupContext, ct),
+                    groupContext,
+                    payloads,
+                    ct);
+            }
 
             await MarkProcessedAsync(messages, ct);
         }
@@ -73,20 +94,26 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         return reg;
     }
 
-    private async Task<IReadOnlyList<object>> ResolvePayloadsAsync(IReadOnlyList<InboxMessage> messages, Type messageType, CancellationToken ct)
+    private async Task<IReadOnlyList<BatchItem>> ResolveBatchItemsAsync(
+        IReadOnlyList<InboxMessage> messages,
+        BatchConsumeContext context,
+        Type messageType,
+        CancellationToken ct)
     {
-        var payloads = new List<object>(messages.Count);
-        foreach (var msg in messages)
+        var items = new List<BatchItem>(messages.Count);
+        for (var i = 0; i < messages.Count; i++)
         {
+            var msg = messages[i];
             using var doc = _serializer.Parse(msg.PayloadJson);
             var root = doc.RootElement;
 
             var (dataEl, dataContentType) = GetDataEnvelope(root);
             var dataObj = await ResolveDataAsync(dataEl, dataContentType, messageType, ct);
-            payloads.Add(dataObj);
+            var ctx = context.Messages[i];
+            items.Add(new BatchItem(msg, ctx, dataObj));
         }
 
-        return payloads;
+        return items;
     }
 
     private static (JsonElement DataElement, string? DataContentType) GetDataEnvelope(JsonElement root)
@@ -117,6 +144,8 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         }
         return list;
     }
+
+    private sealed record BatchItem(InboxMessage Message, ConsumeContext Context, object Payload);
 
     private static async Task InvokeHandlerAsync(
         IServiceScope scope,

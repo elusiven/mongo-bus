@@ -91,6 +91,36 @@ public class BatchConsumerTests(MongoDbFixture fixture)
         };
     }
 
+    public sealed record GroupedMessage(string GroupId, int Index);
+
+    public sealed class GroupedBatchHandler : IBatchMessageHandler<GroupedMessage>
+    {
+        public static readonly ConcurrentDictionary<string, int> GroupCounts = new();
+
+        public Task HandleBatchAsync(IReadOnlyList<GroupedMessage> messages, BatchConsumeContext context, CancellationToken ct)
+        {
+            var key = context.GroupKey ?? "__none__";
+            GroupCounts.AddOrUpdate(key, messages.Count, (_, existing) => existing + messages.Count);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class GroupedBatchDefinition : BatchConsumerDefinition<GroupedBatchHandler, GroupedMessage>
+    {
+        public override string TypeId => "batch.grouped";
+        public override BatchConsumerOptions BatchOptions => new()
+        {
+            MinBatchSize = 1,
+            MaxBatchSize = 10,
+            MaxBatchWaitTime = TimeSpan.FromSeconds(1),
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage
+        };
+
+        public override IBatchGroupingStrategy GroupingStrategy =>
+            BatchGrouping.ByMessage<GroupedMessage>(m => m.GroupId);
+    }
+
     [Fact]
     public async Task ShouldProcessInBatchesWithMaxSize()
     {
@@ -235,6 +265,57 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             var sizes = IdleBatchHandler.BatchSizes.ToArray();
             sizes.Should().ContainSingle();
             sizes[0].Should().Be(2);
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldGroupBatchByMessageProperty()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "batch_grouped_test_" + Guid.NewGuid().ToString("N");
+        });
+        services.AddMongoBusBatchConsumer<GroupedBatchHandler, GroupedMessage, GroupedBatchDefinition>();
+
+        var sp = services.BuildServiceProvider();
+        var bus = sp.GetRequiredService<IMessageBus>();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var bindings = db.GetCollection<Binding>("bus_bindings");
+            var bindingTimeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < bindingTimeout && await bindings.CountDocumentsAsync(FilterDefinition<Binding>.Empty) == 0)
+            {
+                await Task.Delay(100);
+            }
+
+            GroupedBatchHandler.GroupCounts.Clear();
+
+            await bus.PublishAsync("batch.grouped", new GroupedMessage("A", 1), "test-source");
+            await bus.PublishAsync("batch.grouped", new GroupedMessage("B", 2), "test-source");
+            await bus.PublishAsync("batch.grouped", new GroupedMessage("A", 3), "test-source");
+
+            var timeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < timeout && GroupedBatchHandler.GroupCounts.Count < 2)
+            {
+                await Task.Delay(100);
+            }
+
+            GroupedBatchHandler.GroupCounts.Should().ContainKey("A");
+            GroupedBatchHandler.GroupCounts.Should().ContainKey("B");
+            GroupedBatchHandler.GroupCounts["A"].Should().Be(2);
+            GroupedBatchHandler.GroupCounts["B"].Should().Be(1);
         }
         finally
         {

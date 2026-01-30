@@ -110,6 +110,10 @@ public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, O
         FlushMode = BatchFlushMode.SinceFirstMessage,
         FailureMode = BatchFailureMode.RetryBatch
     };
+
+    // Group by message property or metadata
+    public override IBatchGroupingStrategy GroupingStrategy =>
+        BatchGrouping.ByMessage<OrderBatch>(m => m.OrderId);
 }
 
 builder.Services.AddMongoBusBatchConsumer<OrderBatchHandler, OrderBatch, OrderBatchDefinition>();

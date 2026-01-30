@@ -5,4 +5,5 @@ public sealed record BatchConsumeContext(
     string TypeId,
     IReadOnlyList<ConsumeContext> Messages,
     DateTime BatchStartedUtc,
-    DateTime BatchCompletedUtc);
+    DateTime BatchCompletedUtc,
+    string? GroupKey = null);
