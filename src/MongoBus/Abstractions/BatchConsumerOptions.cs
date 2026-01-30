@@ -20,6 +20,7 @@ public sealed record BatchConsumerOptions
     public TimeSpan MaxBatchIdleTime { get; init; } = TimeSpan.Zero;
     public BatchFlushMode FlushMode { get; init; } = BatchFlushMode.SinceFirstMessage;
     public BatchFailureMode FailureMode { get; init; } = BatchFailureMode.RetryBatch;
+    public int MaxInFlightBatches { get; init; } = 0; // 0 = unlimited
 
     public void EnsureValid()
     {
@@ -29,6 +30,8 @@ public sealed record BatchConsumerOptions
             throw new ArgumentOutOfRangeException(nameof(MaxBatchSize), "MaxBatchSize must be >= 1.");
         if (MaxBatchSize < MinBatchSize)
             throw new ArgumentOutOfRangeException(nameof(MaxBatchSize), "MaxBatchSize must be >= MinBatchSize.");
+        if (MaxInFlightBatches < 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxInFlightBatches), "MaxInFlightBatches must be >= 0.");
         if (FlushMode == BatchFlushMode.SinceFirstMessage)
         {
             if (MaxBatchWaitTime <= TimeSpan.Zero)

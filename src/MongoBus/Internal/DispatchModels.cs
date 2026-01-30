@@ -35,4 +35,5 @@ internal sealed record BatchRuntimeConfig(
     TimeSpan LockTime,
     int MaxAttempts,
     bool IdempotencyEnabled,
-    BatchConsumerOptions Options);
+    BatchConsumerOptions Options,
+    int MaxInFlightBatches);

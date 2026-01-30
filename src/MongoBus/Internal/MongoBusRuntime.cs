@@ -125,14 +125,18 @@ internal sealed class MongoBusRuntime : BackgroundService
             cfg.Options.MaxBatchWaitTime,
             cfg.Options.MaxBatchIdleTime);
 
+        var limiter = cfg.MaxInFlightBatches > 0
+            ? new SemaphoreSlim(cfg.MaxInFlightBatches, cfg.MaxInFlightBatches)
+            : null;
+
         var workers = Enumerable.Range(0, cfg.Concurrency)
-            .Select(_ => BatchWorkerLoopAsync(cfg, pumpId, ct))
+            .Select(_ => BatchWorkerLoopAsync(cfg, pumpId, limiter, ct))
             .ToArray();
 
         await Task.WhenAll(workers);
     }
 
-    private async Task BatchWorkerLoopAsync(BatchRuntimeConfig cfg, string pumpId, CancellationToken ct)
+    private async Task BatchWorkerLoopAsync(BatchRuntimeConfig cfg, string pumpId, SemaphoreSlim? limiter, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -175,7 +179,31 @@ internal sealed class MongoBusRuntime : BackgroundService
                 lastReceived = DateTime.UtcNow;
             }
 
+            await DispatchBatchWithBackpressureAsync(cfg, limiter, messages, batchStart, ct);
+        }
+    }
+
+    private async Task DispatchBatchWithBackpressureAsync(
+        BatchRuntimeConfig cfg,
+        SemaphoreSlim? limiter,
+        IReadOnlyList<InboxMessage> messages,
+        DateTime batchStart,
+        CancellationToken ct)
+    {
+        if (limiter is null)
+        {
             await DispatchBatchAsync(cfg, messages, batchStart, ct);
+            return;
+        }
+
+        await limiter.WaitAsync(ct);
+        try
+        {
+            await DispatchBatchAsync(cfg, messages, batchStart, ct);
+        }
+        finally
+        {
+            limiter.Release();
         }
     }
 
