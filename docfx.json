@@ -1,0 +1,45 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "files": [
+            "src/**/MongoBus*.csproj"
+          ]
+        }
+      ],
+      "dest": "api",
+      "properties": {
+        "TargetFramework": "net8.0"
+      }
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": [
+          "docs/**/*.md",
+          "docs/**/*.yml"
+        ]
+      },
+      {
+        "files": [
+          "api/**.yml",
+          "api/index.md"
+        ]
+      }
+    ],
+    "resource": [
+      {
+        "files": [
+          "docs/images/**"
+        ]
+      }
+    ],
+    "output": "_site",
+    "globalMetadata": {
+      "_appTitle": "MongoBus",
+      "_appFooter": "MongoBus Documentation"
+    }
+  }
+}

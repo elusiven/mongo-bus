@@ -351,3 +351,15 @@ The project includes an integration test suite using **Testcontainers.MongoDb**.
 ```bash
 dotnet test
 ```
+
+## Documentation (DocFX + GitHub Pages)
+
+This repo includes a DocFX setup and a GitHub Pages workflow.
+
+- Build locally:
+    ```bash
+    dotnet tool install -g docfx
+    docfx docfx.json
+    ```
+- Output is in `_site/` (ignored by git).
+- GitHub Pages is deployed via `.github/workflows/docs.yml` on push to `main`.
