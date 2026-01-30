@@ -57,6 +57,32 @@ public class MyBatchDefinition : BatchConsumerDefinition<MyBatchHandler, MyMessa
 }
 ```
 
+## Observers (Publish/Consume/Batch)
+
+```csharp
+public sealed class MyBatchObserver : IBatchObserver
+{
+    public void OnBatchProcessed(BatchMetrics metrics) { }
+    public void OnBatchFailed(BatchFailureMetrics metrics) { }
+}
+
+public sealed class MyPublishObserver : IPublishObserver
+{
+    public void OnPublish(PublishMetrics metrics) { }
+    public void OnPublishFailed(PublishFailureMetrics metrics) { }
+}
+
+public sealed class MyConsumeObserver : IConsumeObserver
+{
+    public void OnMessageProcessed(ConsumeMetrics metrics) { }
+    public void OnMessageFailed(ConsumeFailureMetrics metrics) { }
+}
+
+services.AddMongoBusBatchObserver<MyBatchObserver>();
+services.AddMongoBusPublishObserver<MyPublishObserver>();
+services.AddMongoBusConsumeObserver<MyConsumeObserver>();
+```
+
 ## Claim check providers
 
 Core package includes in-memory claim check only. For other providers install:

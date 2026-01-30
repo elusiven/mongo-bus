@@ -19,6 +19,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     private readonly IClaimCheckManager _claimCheck;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), DispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
+    private readonly IReadOnlyList<IConsumeObserver> _observers;
 
     public MongoMessageDispatcher(
         IServiceProvider sp,
@@ -26,13 +27,15 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
         IMongoDatabase db,
         ILogger<MongoMessageDispatcher> log,
         IClaimCheckManager claimCheck,
-        IEnumerable<IConsumerDefinition> definitions)
+        IEnumerable<IConsumerDefinition> definitions,
+        IEnumerable<IConsumeObserver> observers)
     {
         _sp = sp;
         _serializer = serializer;
         _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         _log = log;
         _claimCheck = claimCheck;
+        _observers = observers.ToList();
         var singleDefinitions = definitions.Where(d => d is not IBatchConsumerDefinition).ToList();
         _dispatchMap = DispatchRegistrationBuilder.BuildDispatchMap(singleDefinitions);
         _maxAttemptsMap = singleDefinitions
@@ -43,6 +46,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     public async Task DispatchAsync(InboxMessage msg, ConsumeContext context, CancellationToken ct)
     {
         using var scope = _sp.CreateScope();
+        var sw = Stopwatch.StartNew();
         try
         {
             var reg = GetRegistration(msg);
@@ -60,9 +64,12 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
             await InvokeWithInterceptorsAsync(consumeInterceptors, () => InvokeHandlerAsync(scope, reg, dataObj, context, activity, ct), context, dataObj, ct);
 
             await MarkProcessedAsync(msg, ct);
+
+            NotifyMessageProcessed(new ConsumeMetrics(context, sw.Elapsed));
         }
         catch (Exception ex)
         {
+            NotifyMessageFailed(new ConsumeFailureMetrics(context, sw.Elapsed, ex));
             await HandleDispatchFailureAsync(msg, ex, ct);
         }
     }
@@ -224,5 +231,27 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
                 .Set(x => x.LockOwner, null)
                 .Set(x => x.LockedUntilUtc, null),
             cancellationToken: ct);
+    }
+
+    private void NotifyMessageProcessed(ConsumeMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnMessageProcessed(metrics);
+        }
+    }
+
+    private void NotifyMessageFailed(ConsumeFailureMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnMessageFailed(metrics);
+        }
     }
 }

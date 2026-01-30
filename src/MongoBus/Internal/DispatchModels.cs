@@ -16,6 +16,7 @@ internal sealed record BatchDispatchRegistration(
     Type MessageClrType,
     Type HandlerInterface,
     IBatchGroupingStrategy GroupingStrategy,
+    BatchFlushMode FlushMode,
     BatchFailureMode FailureMode,
     Func<object, object, BatchConsumeContext, CancellationToken, Task> HandlerDelegate);
 

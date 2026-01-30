@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -159,6 +160,62 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             FlushMode = BatchFlushMode.SinceFirstMessage,
             MaxInFlightBatches = 1
         };
+    }
+
+    public sealed record MetricsMessage(int Index);
+
+    public sealed class MetricsHandler : IBatchMessageHandler<MetricsMessage>
+    {
+        public Task HandleBatchAsync(IReadOnlyList<MetricsMessage> messages, BatchConsumeContext context, CancellationToken ct) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class MetricsDefinition : BatchConsumerDefinition<MetricsHandler, MetricsMessage>
+    {
+        public override string TypeId => "batch.metrics";
+        public override BatchConsumerOptions BatchOptions => new()
+        {
+            MinBatchSize = 1,
+            MaxBatchSize = 10,
+            MaxBatchWaitTime = TimeSpan.FromSeconds(1),
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage
+        };
+    }
+
+    public sealed record FailureMetricsMessage(int Index);
+
+    public sealed class FailureMetricsHandler : IBatchMessageHandler<FailureMetricsMessage>
+    {
+        public Task HandleBatchAsync(IReadOnlyList<FailureMetricsMessage> messages, BatchConsumeContext context, CancellationToken ct)
+        {
+            throw new InvalidOperationException("boom");
+        }
+    }
+
+    public sealed class FailureMetricsDefinition : BatchConsumerDefinition<FailureMetricsHandler, FailureMetricsMessage>
+    {
+        public override string TypeId => "batch.metrics.fail";
+        public override int MaxAttempts => 1;
+        public override BatchConsumerOptions BatchOptions => new()
+        {
+            MinBatchSize = 1,
+            MaxBatchSize = 10,
+            MaxBatchWaitTime = TimeSpan.FromSeconds(1),
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage,
+            FailureMode = BatchFailureMode.MarkDead
+        };
+    }
+
+    public sealed class TestBatchMetricsObserver : IBatchObserver
+    {
+        public ConcurrentQueue<BatchMetrics> Processed { get; } = new();
+        public ConcurrentQueue<BatchFailureMetrics> Failed { get; } = new();
+
+        public void OnBatchProcessed(BatchMetrics metrics) => Processed.Enqueue(metrics);
+
+        public void OnBatchFailed(BatchFailureMetrics metrics) => Failed.Enqueue(metrics);
     }
 
     [Fact]
@@ -407,6 +464,116 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             }
 
             BackpressureHandler.MaxObserved.Should().BeLessThanOrEqualTo(1);
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldEmitBatchMetricsOnSuccess()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "batch_metrics_test_" + Guid.NewGuid().ToString("N");
+        });
+        services.AddMongoBusBatchConsumer<MetricsHandler, MetricsMessage, MetricsDefinition>();
+        services.AddMongoBusBatchObserver<TestBatchMetricsObserver>();
+
+        var sp = services.BuildServiceProvider();
+        var bus = sp.GetRequiredService<IMessageBus>();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+        var observer = sp.GetRequiredService<IBatchObserver>() as TestBatchMetricsObserver;
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var bindings = db.GetCollection<Binding>("bus_bindings");
+            var bindingTimeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < bindingTimeout && await bindings.CountDocumentsAsync(FilterDefinition<Binding>.Empty) == 0)
+            {
+                await Task.Delay(100);
+            }
+
+            while (observer!.Processed.TryDequeue(out _)) { }
+
+            await bus.PublishAsync("batch.metrics", new MetricsMessage(1), "test-source");
+            await bus.PublishAsync("batch.metrics", new MetricsMessage(2), "test-source");
+
+            var timeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < timeout && observer.Processed.IsEmpty)
+            {
+                await Task.Delay(100);
+            }
+
+            observer.Processed.Should().NotBeEmpty();
+            observer.Processed.TryPeek(out var sample);
+            sample.Should().NotBeNull();
+            sample!.TypeId.Should().Be("batch.metrics");
+            sample.BatchSize.Should().Be(2);
+            sample.Latency.Should().BeGreaterThan(TimeSpan.Zero);
+            sample.FlushMode.Should().Be(BatchFlushMode.SinceFirstMessage);
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldEmitBatchMetricsOnFailure()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "batch_metrics_fail_test_" + Guid.NewGuid().ToString("N");
+        });
+        services.AddMongoBusBatchConsumer<FailureMetricsHandler, FailureMetricsMessage, FailureMetricsDefinition>();
+        services.AddMongoBusBatchObserver<TestBatchMetricsObserver>();
+
+        var sp = services.BuildServiceProvider();
+        var bus = sp.GetRequiredService<IMessageBus>();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+        var observer = sp.GetRequiredService<IBatchObserver>() as TestBatchMetricsObserver;
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var bindings = db.GetCollection<Binding>("bus_bindings");
+            var bindingTimeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < bindingTimeout && await bindings.CountDocumentsAsync(FilterDefinition<Binding>.Empty) == 0)
+            {
+                await Task.Delay(100);
+            }
+
+            while (observer!.Failed.TryDequeue(out _)) { }
+
+            await bus.PublishAsync("batch.metrics.fail", new FailureMetricsMessage(1), "test-source");
+
+            var timeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < timeout && observer.Failed.IsEmpty)
+            {
+                await Task.Delay(100);
+            }
+
+            observer.Failed.Should().NotBeEmpty();
+            observer.Failed.TryPeek(out var sample);
+            sample.Should().NotBeNull();
+            sample!.TypeId.Should().Be("batch.metrics.fail");
+            sample.BatchSize.Should().Be(1);
+            sample.FailureMode.Should().Be(BatchFailureMode.MarkDead);
+            sample.Exception.Should().BeOfType<TargetInvocationException>();
+            sample.Exception.InnerException.Should().BeOfType<InvalidOperationException>();
         }
         finally
         {

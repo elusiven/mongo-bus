@@ -168,6 +168,34 @@ builder.Services.AddMongoBusPublishInterceptor<MyPublishInterceptor>();
 builder.Services.AddMongoBusConsumeInterceptor<MyConsumeInterceptor>();
 ```
 
+### Observers (Publish/Consume/Batch)
+
+Observers are lightweight hooks for telemetry and auditing (not middleware). MongoBus registers default OpenTelemetry observers for publish, consume, and batch processing. You can add your own:
+
+```csharp
+public sealed class MyPublishObserver : IPublishObserver
+{
+    public void OnPublish(PublishMetrics metrics) { }
+    public void OnPublishFailed(PublishFailureMetrics metrics) { }
+}
+
+public sealed class MyConsumeObserver : IConsumeObserver
+{
+    public void OnMessageProcessed(ConsumeMetrics metrics) { }
+    public void OnMessageFailed(ConsumeFailureMetrics metrics) { }
+}
+
+public sealed class MyBatchObserver : IBatchObserver
+{
+    public void OnBatchProcessed(BatchMetrics metrics) { }
+    public void OnBatchFailed(BatchFailureMetrics metrics) { }
+}
+
+builder.Services.AddMongoBusPublishObserver<MyPublishObserver>();
+builder.Services.AddMongoBusConsumeObserver<MyConsumeObserver>();
+builder.Services.AddMongoBusBatchObserver<MyBatchObserver>();
+```
+
 ### Claim Check (Large Messages)
 
 MongoBus can automatically offload large message payloads to external blob storage (Claim Check pattern). When enabled, the bus stores a lightweight reference in MongoDB and retrieves the full payload during consumption.

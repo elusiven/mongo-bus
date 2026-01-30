@@ -15,10 +15,12 @@ public sealed class MongoMessageBus(
     ICloudEventEnveloper enveloper,
     ICloudEventSerializer serializer,
     IClaimCheckManager claimCheck,
-    IEnumerable<IPublishInterceptor> interceptors) : IMessageBus
+    IEnumerable<IPublishInterceptor> interceptors,
+    IEnumerable<IPublishObserver> observers) : IMessageBus
 {
     private readonly IMongoCollection<InboxMessage> _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
     private readonly IMongoCollection<Binding> _bindings = db.GetCollection<Binding>(MongoBusConstants.BindingsCollectionName);
+    private readonly IReadOnlyList<IPublishObserver> _observers = observers.ToList();
 
     public async Task PublishAsync<T>(
         string typeId,
@@ -40,20 +42,28 @@ public sealed class MongoMessageBus(
 
         var publishContext = BuildPublishContext(typeId, data, source, subject, id, timeUtc, deliverAt, correlationId, causationId, useClaimCheck);
         var interceptorList = interceptors.ToList();
+        var sw = Stopwatch.StartNew();
+        var endpointCount = 0;
 
         try
         {
             if (interceptorList.Count == 0)
             {
-                await CorePublishAsync(publishContext, ct);
+                endpointCount = await CorePublishAsync(publishContext, ct);
             }
             else
             {
-                await InvokeWithInterceptorsAsync(interceptorList, publishContext, () => CorePublishAsync(publishContext, ct), ct);
+                await InvokeWithInterceptorsAsync(interceptorList, publishContext, async () =>
+                {
+                    endpointCount = await CorePublishAsync(publishContext, ct);
+                }, ct);
             }
+
+            NotifyPublish(new PublishMetrics(typeId, endpointCount, sw.Elapsed));
         }
         catch (Exception ex)
         {
+            NotifyPublishFailed(new PublishFailureMetrics(typeId, endpointCount, sw.Elapsed, ex));
             if (activity != null)
             {
                 activity.SetStatus(ActivityStatusCode.Error, ex.Message);
@@ -97,12 +107,12 @@ public sealed class MongoMessageBus(
         };
     }
 
-    private async Task CorePublishAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
+    private async Task<int> CorePublishAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
     {
         var topic = publishContext.TypeId;
         var routes = await _bindings.Find(x => x.Topic == topic).ToListAsync(ct);
 
-        if (routes.Count == 0) return;
+        if (routes.Count == 0) return 0;
 
         var (payload, cloudEventId) = await BuildPayloadAsync(publishContext, ct);
         var now = DateTime.UtcNow;
@@ -130,6 +140,8 @@ public sealed class MongoMessageBus(
         {
             await _inbox.InsertManyAsync(docs, cancellationToken: ct);
         }
+
+        return docs.Count;
     }
 
     private async Task<(string Payload, string CloudEventId)> BuildPayloadAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
@@ -181,5 +193,27 @@ public sealed class MongoMessageBus(
         }
 
         await Next();
+    }
+
+    private void NotifyPublish(PublishMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnPublish(metrics);
+        }
+    }
+
+    private void NotifyPublishFailed(PublishFailureMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnPublishFailed(metrics);
+        }
     }
 }

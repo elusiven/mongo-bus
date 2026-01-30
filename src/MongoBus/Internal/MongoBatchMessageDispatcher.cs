@@ -19,6 +19,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     private readonly IClaimCheckManager _claimCheck;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), BatchDispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
+    private readonly IReadOnlyList<IBatchObserver> _observers;
 
     public MongoBatchMessageDispatcher(
         IServiceProvider sp,
@@ -26,13 +27,15 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         IMongoDatabase db,
         ILogger<MongoBatchMessageDispatcher> log,
         IClaimCheckManager claimCheck,
-        IEnumerable<IConsumerDefinition> definitions)
+        IEnumerable<IConsumerDefinition> definitions,
+        IEnumerable<IBatchObserver> observers)
     {
         _sp = sp;
         _serializer = serializer;
         _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
         _log = log;
         _claimCheck = claimCheck;
+        _observers = observers.ToList();
 
         var batchDefinitions = definitions.OfType<IBatchConsumerDefinition>().ToList();
         _dispatchMap = DispatchRegistrationBuilder.BuildBatchDispatchMap(batchDefinitions);
@@ -47,9 +50,10 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
             return;
 
         using var scope = _sp.CreateScope();
+        BatchDispatchRegistration? reg = null;
         try
         {
-            var reg = GetRegistration(context.EndpointId, context.TypeId);
+            reg = GetRegistration(context.EndpointId, context.TypeId);
 
             var batchItems = await ResolveBatchItemsAsync(messages, context, reg.MessageClrType, ct);
 
@@ -76,12 +80,30 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                     groupContext,
                     payloads,
                     ct);
+
+                NotifyBatchProcessed(new BatchMetrics(
+                    groupContext.EndpointId,
+                    groupContext.TypeId,
+                    payloads.Count,
+                    groupContext.BatchCompletedUtc - groupContext.BatchStartedUtc,
+                    groupContext.GroupKey,
+                    reg.FlushMode));
             }
 
             await MarkProcessedAsync(messages, ct);
         }
         catch (Exception ex)
         {
+            if (reg != null)
+            {
+                NotifyBatchFailed(new BatchFailureMetrics(
+                    context.EndpointId,
+                    context.TypeId,
+                    messages.Count,
+                    DateTime.UtcNow - context.BatchStartedUtc,
+                    reg.FailureMode,
+                    ex));
+            }
             await HandleDispatchFailureAsync(messages, context, ex, ct);
         }
     }
@@ -282,5 +304,27 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                 .Set(x => x.LockOwner, null)
                 .Set(x => x.LockedUntilUtc, null),
             cancellationToken: ct);
+    }
+
+    private void NotifyBatchProcessed(BatchMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnBatchProcessed(metrics);
+        }
+    }
+
+    private void NotifyBatchFailed(BatchFailureMetrics metrics)
+    {
+        if (_observers.Count == 0)
+            return;
+
+        foreach (var observer in _observers)
+        {
+            observer.OnBatchFailed(metrics);
+        }
     }
 }

@@ -60,6 +60,34 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddMongoBusPublishObserver<T>(this IServiceCollection services)
+        where T : class, IPublishObserver
+    {
+        services.AddSingleton<IPublishObserver, T>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusConsumeObserver<T>(this IServiceCollection services)
+        where T : class, IConsumeObserver
+    {
+        services.AddSingleton<IConsumeObserver, T>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusBatchObserver<T>(this IServiceCollection services)
+        where T : class, IBatchObserver
+    {
+        services.AddSingleton<IBatchObserver, T>();
+        return services;
+    }
+
+    public static IServiceCollection AddMongoBusBatchMetricsObserver<T>(this IServiceCollection services)
+        where T : class, IBatchMetricsObserver
+    {
+        services.AddSingleton<IBatchObserver, T>();
+        return services;
+    }
+
     public static IServiceCollection AddMongoBusInMemoryClaimCheck(this IServiceCollection services)
     {
         services.AddSingleton<IClaimCheckProvider, InMemoryClaimCheckProvider>();
@@ -91,6 +119,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IClaimCheckCompressor, GZipClaimCheckCompressor>();
         services.AddSingleton<IClaimCheckCompressorProvider, ClaimCheckCompressorProvider>();
         services.AddSingleton<IClaimCheckManager, ClaimCheckManager>();
+
+        services.AddSingleton<IPublishObserver, OpenTelemetryPublishObserver>();
+        services.AddSingleton<IConsumeObserver, OpenTelemetryConsumeObserver>();
+        services.AddSingleton<IBatchObserver, OpenTelemetryBatchObserver>();
     }
 
     private static void RegisterHostedServices(IServiceCollection services)
