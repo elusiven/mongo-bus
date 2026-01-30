@@ -108,7 +108,8 @@ public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, O
         MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // used when FlushMode=SinceFirstMessage
         MaxBatchIdleTime = TimeSpan.Zero,              // must be 0 when FlushMode=SinceFirstMessage
         FlushMode = BatchFlushMode.SinceFirstMessage,
-        FailureMode = BatchFailureMode.RetryBatch
+        FailureMode = BatchFailureMode.RetryBatch,
+        MaxInFlightBatches = 2
     };
 
     // Group by message property or metadata

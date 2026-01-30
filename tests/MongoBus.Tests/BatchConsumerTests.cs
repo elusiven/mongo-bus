@@ -121,6 +121,46 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             BatchGrouping.ByMessage<GroupedMessage>(m => m.GroupId);
     }
 
+    public sealed record BackpressureMessage(int Index);
+
+    public sealed class BackpressureHandler : IBatchMessageHandler<BackpressureMessage>
+    {
+        public static int ActiveBatches;
+        public static int MaxObserved;
+        public static int TotalProcessed;
+
+        public async Task HandleBatchAsync(IReadOnlyList<BackpressureMessage> messages, BatchConsumeContext context, CancellationToken ct)
+        {
+            var current = Interlocked.Increment(ref ActiveBatches);
+            var prevMax = Volatile.Read(ref MaxObserved);
+            while (current > prevMax)
+            {
+                Interlocked.CompareExchange(ref MaxObserved, current, prevMax);
+                prevMax = Volatile.Read(ref MaxObserved);
+            }
+
+            Interlocked.Add(ref TotalProcessed, messages.Count);
+            await Task.Delay(300, ct);
+
+            Interlocked.Decrement(ref ActiveBatches);
+        }
+    }
+
+    public sealed class BackpressureDefinition : BatchConsumerDefinition<BackpressureHandler, BackpressureMessage>
+    {
+        public override string TypeId => "batch.backpressure";
+        public override int ConcurrencyLimit => 2;
+        public override BatchConsumerOptions BatchOptions => new()
+        {
+            MinBatchSize = 1,
+            MaxBatchSize = 1,
+            MaxBatchWaitTime = TimeSpan.FromSeconds(1),
+            MaxBatchIdleTime = TimeSpan.Zero,
+            FlushMode = BatchFlushMode.SinceFirstMessage,
+            MaxInFlightBatches = 1
+        };
+    }
+
     [Fact]
     public async Task ShouldProcessInBatchesWithMaxSize()
     {
@@ -316,6 +356,57 @@ public class BatchConsumerTests(MongoDbFixture fixture)
             GroupedBatchHandler.GroupCounts.Should().ContainKey("B");
             GroupedBatchHandler.GroupCounts["A"].Should().Be(2);
             GroupedBatchHandler.GroupCounts["B"].Should().Be(1);
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldLimitMaxInFlightBatches()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "batch_backpressure_test_" + Guid.NewGuid().ToString("N");
+        });
+        services.AddMongoBusBatchConsumer<BackpressureHandler, BackpressureMessage, BackpressureDefinition>();
+
+        var sp = services.BuildServiceProvider();
+        var bus = sp.GetRequiredService<IMessageBus>();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var bindings = db.GetCollection<Binding>("bus_bindings");
+            var bindingTimeout = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < bindingTimeout && await bindings.CountDocumentsAsync(FilterDefinition<Binding>.Empty) == 0)
+            {
+                await Task.Delay(100);
+            }
+
+            BackpressureHandler.ActiveBatches = 0;
+            BackpressureHandler.MaxObserved = 0;
+            BackpressureHandler.TotalProcessed = 0;
+
+            for (var i = 0; i < 4; i++)
+            {
+                await bus.PublishAsync("batch.backpressure", new BackpressureMessage(i), "test-source");
+            }
+
+            var timeout = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < timeout && Volatile.Read(ref BackpressureHandler.TotalProcessed) < 4)
+            {
+                await Task.Delay(100);
+            }
+
+            BackpressureHandler.MaxObserved.Should().BeLessThanOrEqualTo(1);
         }
         finally
         {

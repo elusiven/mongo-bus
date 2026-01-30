@@ -112,7 +112,8 @@ internal static class DispatchRegistrationBuilder
             def.LockTime,
             def.MaxAttempts,
             def.IdempotencyEnabled,
-            def.BatchOptions);
+            def.BatchOptions,
+            def.BatchOptions.MaxInFlightBatches);
 
     private static IReadOnlyCollection<string> MergeTypeIds(IReadOnlyCollection<string> existing, string typeId)
     {

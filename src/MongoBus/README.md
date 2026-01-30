@@ -48,7 +48,8 @@ public class MyBatchDefinition : BatchConsumerDefinition<MyBatchHandler, MyMessa
         MaxBatchSize = 100,
         MaxBatchWaitTime = TimeSpan.FromSeconds(2),
         MaxBatchIdleTime = TimeSpan.Zero,
-        FlushMode = BatchFlushMode.SinceFirstMessage
+        FlushMode = BatchFlushMode.SinceFirstMessage,
+        MaxInFlightBatches = 1
     };
 
     public override IBatchGroupingStrategy GroupingStrategy =>
