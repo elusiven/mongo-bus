@@ -91,7 +91,7 @@ internal static class DispatchRegistrationBuilder
         Task HandlerDelegate(object handler, object data, BatchConsumeContext ctx, CancellationToken ct) =>
             (Task)method.Invoke(handler, [data, ctx, ct])!;
 
-        return new BatchDispatchRegistration(def.EndpointName, def.TypeId, def.MessageType, def.ConsumerType, def.BatchOptions.FailureMode, HandlerDelegate);
+        return new BatchDispatchRegistration(def.EndpointName, def.TypeId, def.MessageType, def.ConsumerType, def.GroupingStrategy, def.BatchOptions.FailureMode, HandlerDelegate);
     }
 
     private static EndpointRuntimeConfig CreateEndpointConfig(IConsumerDefinition def) =>

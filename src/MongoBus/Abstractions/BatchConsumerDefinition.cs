@@ -17,4 +17,5 @@ public abstract class BatchConsumerDefinition<TConsumer, TMessage> : IBatchConsu
     public virtual bool IdempotencyEnabled => false;
 
     public virtual BatchConsumerOptions BatchOptions => new();
+    public virtual IBatchGroupingStrategy GroupingStrategy => BatchGrouping.None;
 }

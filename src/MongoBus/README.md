@@ -50,6 +50,9 @@ public class MyBatchDefinition : BatchConsumerDefinition<MyBatchHandler, MyMessa
         MaxBatchIdleTime = TimeSpan.Zero,
         FlushMode = BatchFlushMode.SinceFirstMessage
     };
+
+    public override IBatchGroupingStrategy GroupingStrategy =>
+        BatchGrouping.ByMetadata(ctx => ctx.Subject ?? "default");
 }
 ```
 
