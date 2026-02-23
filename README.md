@@ -150,6 +150,54 @@ await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-000", 1.00m), 
 await bus.PublishAsync("orders.v1.created", new OrderCreated("ORD-999", 999999.99m), useClaimCheck: false);
 ```
 
+### Transactional Outbox
+
+MongoBus supports publishing to an outbox so your business write and event publish can be committed together.
+
+```csharp
+// Configuration
+builder.Services.AddMongoBus(opt =>
+{
+    opt.ConnectionString = "mongodb://localhost:27017";
+    opt.DatabaseName = "MyMessageBus";
+
+    opt.Outbox.Enabled = true;
+
+    // Optional: route selected types through outbox when using IMessageBus.PublishAsync
+    opt.UseOutboxForTypeId = typeId => typeId.StartsWith("orders.");
+});
+
+// Explicit outbox publishing API
+var txBus = serviceProvider.GetRequiredService<ITransactionalMessageBus>();
+var mongoClient = serviceProvider.GetRequiredService<IMongoClient>();
+var db = serviceProvider.GetRequiredService<IMongoDatabase>();
+
+await txBus.PublishWithTransactionAsync(
+    "orders.v1.created",
+    new OrderCreated("ORD-TX-001", 149.99m),
+    async (session, ct) =>
+    {
+        var orders = db.GetCollection<BsonDocument>("orders");
+        await orders.InsertOneAsync(
+            session,
+            new BsonDocument
+            {
+                ["orderId"] = "ORD-TX-001",
+                ["amount"] = 149.99m,
+                ["createdUtc"] = DateTime.UtcNow
+            },
+            cancellationToken: ct);
+    });
+
+// Or just enqueue to outbox (without opening a transaction explicitly)
+await txBus.PublishToOutboxAsync(
+    "orders.v1.created",
+    new OrderCreated("ORD-OUTBOX-001", 39.99m));
+```
+
+> Note: MongoDB transactions require a replica set or sharded cluster.
+> For a complete runnable demo, see `samples/MongoBus.Sample/Program.cs`.
+
 ### Middleware / Interceptors
 
 You can hook into the publishing and consuming pipelines by implementing `IPublishInterceptor` and `IConsumeInterceptor`.

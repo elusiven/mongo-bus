@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using MongoBus.Abstractions;
 using MongoBus.DependencyInjection;
 using MongoBus.Infrastructure;
@@ -9,23 +8,24 @@ using MongoDB.Driver;
 
 namespace MongoBus.Internal;
 
-public sealed class MongoMessageBus(
-    IMongoDatabase db, 
+internal sealed class MongoTransactionalMessageBus(
+    IMongoClient client,
+    IMongoDatabase db,
     MongoBusOptions options,
-    ITransactionalMessageBus transactionalBus,
     ICloudEventEnveloper enveloper,
     ICloudEventSerializer serializer,
     IClaimCheckManager claimCheck,
     IEnumerable<IPublishInterceptor> interceptors,
-    IEnumerable<IPublishObserver> observers) : IMessageBus
+    IEnumerable<IPublishObserver> observers) : ITransactionalMessageBus
 {
-    private readonly IMongoCollection<InboxMessage> _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
+    private readonly IMongoCollection<OutboxMessage> _outbox = db.GetCollection<OutboxMessage>(MongoBusConstants.OutboxCollectionName);
     private readonly IMongoCollection<Binding> _bindings = db.GetCollection<Binding>(MongoBusConstants.BindingsCollectionName);
     private readonly IReadOnlyList<IPublishObserver> _observers = observers.ToList();
 
-    public async Task PublishAsync<T>(
+    public async Task PublishToOutboxAsync<T>(
         string typeId,
         T data,
+        IClientSessionHandle? session = null,
         string? source = null,
         string? subject = null,
         string? id = null,
@@ -36,27 +36,14 @@ public sealed class MongoMessageBus(
         bool? useClaimCheck = null,
         CancellationToken ct = default)
     {
-        if (ShouldUseOutbox(typeId))
-        {
-            await transactionalBus.PublishToOutboxAsync(
-                typeId,
-                data,
-                source: source,
-                subject: subject,
-                id: id,
-                timeUtc: timeUtc,
-                deliverAt: deliverAt,
-                correlationId: correlationId,
-                causationId: causationId,
-                useClaimCheck: useClaimCheck,
-                ct: ct);
-            return;
-        }
+        if (!options.Outbox.Enabled)
+            throw new InvalidOperationException("Outbox is disabled. Enable MongoBusOptions.Outbox.Enabled to use transactional publishing.");
 
-        using var activity = MongoBusDiagnostics.ActivitySource.StartActivity($"{typeId} publish", ActivityKind.Producer);
+        using var activity = MongoBusDiagnostics.ActivitySource.StartActivity($"{typeId} publish.outbox", ActivityKind.Producer);
         activity?.SetTag("messaging.system", "mongodb");
         activity?.SetTag("messaging.destination.name", typeId);
         activity?.SetTag("messaging.operation", "publish");
+        activity?.SetTag("messaging.mongodb.outbox", true);
 
         var publishContext = BuildPublishContext(typeId, data, source, subject, id, timeUtc, deliverAt, correlationId, causationId, useClaimCheck);
         var interceptorList = interceptors.ToList();
@@ -65,15 +52,16 @@ public sealed class MongoMessageBus(
 
         try
         {
+            endpointCount = (int)await _bindings.CountDocumentsAsync(x => x.Topic == typeId, cancellationToken: ct);
             if (interceptorList.Count == 0)
             {
-                endpointCount = await CorePublishAsync(publishContext, ct);
+                await CorePublishToOutboxAsync(session, publishContext, ct);
             }
             else
             {
                 await InvokeWithInterceptorsAsync(interceptorList, publishContext, async () =>
                 {
-                    endpointCount = await CorePublishAsync(publishContext, ct);
+                    await CorePublishToOutboxAsync(session, publishContext, ct);
                 }, ct);
             }
 
@@ -90,6 +78,81 @@ public sealed class MongoMessageBus(
                 activity.AddTag("exception.stacktrace", ex.ToString());
             }
             throw;
+        }
+    }
+
+    public async Task PublishWithTransactionAsync<T>(
+        string typeId,
+        T data,
+        Func<IClientSessionHandle, CancellationToken, Task> transactionCallback,
+        string? source = null,
+        string? subject = null,
+        string? id = null,
+        DateTime? timeUtc = null,
+        DateTime? deliverAt = null,
+        string? correlationId = null,
+        string? causationId = null,
+        bool? useClaimCheck = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionCallback);
+
+        using var session = await client.StartSessionAsync(cancellationToken: ct);
+        session.StartTransaction();
+        try
+        {
+            await transactionCallback(session, ct);
+
+            await PublishToOutboxAsync(
+                typeId,
+                data,
+                session,
+                source,
+                subject,
+                id,
+                timeUtc,
+                deliverAt,
+                correlationId,
+                causationId,
+                useClaimCheck,
+                ct);
+
+            await session.CommitTransactionAsync(ct);
+        }
+        catch
+        {
+            await session.AbortTransactionAsync(ct);
+            throw;
+        }
+    }
+
+    private async Task CorePublishToOutboxAsync<T>(IClientSessionHandle? session, PublishContext<T> publishContext, CancellationToken ct)
+    {
+        var topic = publishContext.TypeId;
+        var (payload, cloudEventId) = await BuildPayloadAsync(publishContext, ct);
+        var now = DateTime.UtcNow;
+
+        var outboxMessage = new OutboxMessage
+        {
+            Topic = topic,
+            TypeId = publishContext.TypeId,
+            PayloadJson = payload,
+            CreatedUtc = now,
+            VisibleUtc = publishContext.DeliverAt ?? now,
+            Attempt = 0,
+            Status = OutboxStatus.Pending,
+            CorrelationId = publishContext.CorrelationId,
+            CausationId = publishContext.CausationId,
+            CloudEventId = cloudEventId
+        };
+
+        if (session is null)
+        {
+            await _outbox.InsertOneAsync(outboxMessage, cancellationToken: ct);
+        }
+        else
+        {
+            await _outbox.InsertOneAsync(session, outboxMessage, cancellationToken: ct);
         }
     }
 
@@ -123,52 +186,6 @@ public sealed class MongoMessageBus(
         {
             UseClaimCheck = useClaimCheck
         };
-    }
-
-    private bool ShouldUseOutbox(string typeId)
-    {
-        if (!options.Outbox.Enabled)
-            return false;
-
-        var hook = options.UseOutboxForTypeId;
-        return hook?.Invoke(typeId) ?? false;
-    }
-
-    private async Task<int> CorePublishAsync<T>(PublishContext<T> publishContext, CancellationToken ct)
-    {
-        var topic = publishContext.TypeId;
-        var routes = await _bindings.Find(x => x.Topic == topic).ToListAsync(ct);
-
-        if (routes.Count == 0) return 0;
-
-        var (payload, cloudEventId) = await BuildPayloadAsync(publishContext, ct);
-        var now = DateTime.UtcNow;
-
-        var docs = routes.Select(r => new InboxMessage
-        {
-            EndpointId = r.EndpointId,
-            Topic = topic,
-            TypeId = publishContext.TypeId,
-            PayloadJson = payload,
-            CreatedUtc = now,
-            VisibleUtc = publishContext.DeliverAt ?? now,
-            Attempt = 0,
-            Status = InboxStatus.Pending,
-            CorrelationId = publishContext.CorrelationId,
-            CausationId = publishContext.CausationId,
-            CloudEventId = cloudEventId
-        }).ToList();
-
-        if (docs.Count == 1)
-        {
-            await _inbox.InsertOneAsync(docs[0], cancellationToken: ct);
-        }
-        else
-        {
-            await _inbox.InsertManyAsync(docs, cancellationToken: ct);
-        }
-
-        return docs.Count;
     }
 
     private async Task<(string Payload, string CloudEventId)> BuildPayloadAsync<T>(PublishContext<T> publishContext, CancellationToken ct)

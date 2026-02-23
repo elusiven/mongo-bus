@@ -14,7 +14,7 @@ public static class ServiceCollectionExtensions
         var opt = BuildOptions(configure);
 
         RegisterCoreServices(services, opt);
-        RegisterHostedServices(services);
+        RegisterHostedServices(services, opt);
 
         return services;
     }
@@ -108,6 +108,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => sp.GetRequiredService<IMongoClient>().GetDatabase(opt.DatabaseName));
 
         services.AddSingleton<IMessageBus, MongoMessageBus>();
+        services.AddSingleton<ITransactionalMessageBus, MongoTransactionalMessageBus>();
         services.AddSingleton<ITopologyManager, MongoBindingRegistry>();
         services.AddSingleton<IMessageDispatcher, MongoMessageDispatcher>();
         services.AddSingleton<IBatchMessageDispatcher, MongoBatchMessageDispatcher>();
@@ -125,12 +126,16 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IBatchObserver, OpenTelemetryBatchObserver>();
     }
 
-    private static void RegisterHostedServices(IServiceCollection services)
+    private static void RegisterHostedServices(IServiceCollection services, MongoBusOptions options)
     {
         services.AddSingleton<MongoBusValidationHostedService>();
         services.AddHostedService(sp => sp.GetRequiredService<MongoBusValidationHostedService>());
         services.AddHostedService<MongoBusIndexesHostedService>();
         services.AddHostedService<MongoBusRuntime>();
+        if (options.Outbox.Enabled)
+        {
+            services.AddHostedService<MongoOutboxRelayService>();
+        }
         services.AddHostedService<ClaimCheckCleanupService>();
     }
 }

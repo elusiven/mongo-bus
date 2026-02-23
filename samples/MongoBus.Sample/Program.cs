@@ -1,10 +1,12 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.DependencyInjection;
 using MongoBus.Models;
 using MongoBus.Dashboard;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +25,10 @@ builder.Services.AddMongoBus(opt =>
     opt.ClaimCheck.Compression.Algorithm = "gzip";
     opt.ClaimCheck.Cleanup.Interval = TimeSpan.FromMinutes(10);
     opt.ClaimCheck.Cleanup.MinimumAge = TimeSpan.FromDays(15);
+
+    opt.Outbox.Enabled = true;
+    opt.Outbox.PollingInterval = TimeSpan.FromMilliseconds(100);
+    opt.UseOutboxForTypeId = typeId => typeId.StartsWith("orders.", StringComparison.Ordinal);
 });
 
 // 2. Configure Dashboard
@@ -52,6 +58,9 @@ app.MapMongoBusDashboard();
 await app.StartAsync();
 
 var bus = app.Services.GetRequiredService<IMessageBus>();
+var transactionalBus = app.Services.GetRequiredService<ITransactionalMessageBus>();
+var mongoClient = app.Services.GetRequiredService<IMongoClient>();
+var mongoDatabase = app.Services.GetRequiredService<IMongoDatabase>();
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 
 logger.LogInformation("Sample application started with Dashboard at /mongobus. Publishing messages...");
@@ -101,6 +110,47 @@ await bus.PublishAsync("notifications.email", new EmailNotification
     Body = new string('x', 1000)
 });
 
+// Transactional outbox demo (explicit): business write + outbox publish in one transaction.
+if (await SupportsTransactionsAsync(mongoClient))
+{
+    await transactionalBus.PublishWithTransactionAsync(
+        "orders.created",
+        new OrderCreated
+        {
+            OrderId = "TX-ORDER-001",
+            CustomerName = "Transactional Customer",
+            Amount = 149.99m
+        },
+        async (session, ct) =>
+        {
+            var appOrders = mongoDatabase.GetCollection<BsonDocument>("sample_app_orders");
+            var orderDoc = new BsonDocument
+            {
+                ["orderId"] = "TX-ORDER-001",
+                ["customerName"] = "Transactional Customer",
+                ["amount"] = 149.99m,
+                ["createdUtc"] = DateTime.UtcNow
+            };
+
+            await appOrders.InsertOneAsync(session, orderDoc, cancellationToken: ct);
+        });
+
+    logger.LogInformation("Transactional outbox example published order TX-ORDER-001.");
+}
+else
+{
+    logger.LogInformation("Skipping PublishWithTransactionAsync demo because MongoDB transactions require a replica set/sharded cluster.");
+
+    await transactionalBus.PublishToOutboxAsync(
+        "orders.created",
+        new OrderCreated
+        {
+            OrderId = "OUTBOX-ONLY-001",
+            CustomerName = "Outbox Only Customer",
+            Amount = 39.99m
+        });
+}
+
 // Batch messages (grouped by customer id)
 var customerA = "customer-a";
 var customerB = "customer-b";
@@ -119,6 +169,13 @@ logger.LogInformation("Messages published. Waiting for processing... (Press Ctrl
 
 // Keep the application running to allow the background worker to process messages
 await app.WaitForShutdownAsync();
+
+static async Task<bool> SupportsTransactionsAsync(IMongoClient client)
+{
+    var admin = client.GetDatabase("admin");
+    var hello = await admin.RunCommandAsync<BsonDocument>(new BsonDocument("hello", 1));
+    return hello.Contains("setName");
+}
 
 // --- Message Models ---
 

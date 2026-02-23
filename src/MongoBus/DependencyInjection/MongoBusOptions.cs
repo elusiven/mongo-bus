@@ -7,6 +7,13 @@ public sealed class MongoBusOptions
     public string? DefaultSource { get; set; }
 
     public ClaimCheckOptions ClaimCheck { get; set; } = new();
+    public OutboxOptions Outbox { get; set; } = new();
+
+    /// <summary>
+    /// Optional hook to route selected typeIds through the outbox when calling IMessageBus.PublishAsync.
+    /// Returning true routes to outbox instead of direct inbox insertion.
+    /// </summary>
+    public Func<string, bool>? UseOutboxForTypeId { get; set; }
 
     /// <summary>
     /// How long to keep messages in the inbox after they are created.

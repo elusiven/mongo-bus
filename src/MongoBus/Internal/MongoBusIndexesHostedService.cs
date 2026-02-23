@@ -25,6 +25,12 @@ public sealed class MongoBusIndexesHostedService : IHostedService
         await inbox.Indexes.CreateManyAsync(BuildInboxIndexes(), cancellationToken: ct);
         await bindings.Indexes.CreateOneAsync(BuildBindingIndex(), cancellationToken: ct);
 
+        if (_options.Outbox.Enabled)
+        {
+            var outbox = _db.GetCollection<OutboxMessage>(MongoBusConstants.OutboxCollectionName);
+            await outbox.Indexes.CreateManyAsync(BuildOutboxIndexes(), cancellationToken: ct);
+        }
+
         // GridFS TTL (optional but recommended if using GridFS claim check)
         await CreateGridFsTtlIndexAsync(ct);
     }
@@ -74,4 +80,22 @@ public sealed class MongoBusIndexesHostedService : IHostedService
         new(
             Builders<Binding>.IndexKeys.Ascending(x => x.Topic).Ascending(x => x.EndpointId),
             new CreateIndexOptions { Unique = true });
+
+    private IEnumerable<CreateIndexModel<OutboxMessage>> BuildOutboxIndexes()
+    {
+        var relayIndex = new CreateIndexModel<OutboxMessage>(
+            Builders<OutboxMessage>.IndexKeys
+                .Ascending(x => x.Status)
+                .Ascending(x => x.VisibleUtc)
+                .Ascending(x => x.LockedUntilUtc));
+
+        var createdIndex = new CreateIndexModel<OutboxMessage>(
+            Builders<OutboxMessage>.IndexKeys.Ascending(x => x.CreatedUtc),
+            new CreateIndexOptions { ExpireAfter = _options.Outbox.ProcessedMessageTtl });
+
+        var cloudEventIndex = new CreateIndexModel<OutboxMessage>(
+            Builders<OutboxMessage>.IndexKeys.Ascending(x => x.CloudEventId));
+
+        return new[] { relayIndex, createdIndex, cloudEventIndex };
+    }
 }
