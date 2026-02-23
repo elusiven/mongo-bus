@@ -17,6 +17,7 @@ internal static class MongoBusConfigValidator
             throw new InvalidOperationException("MongoBusOptions.ProcessedMessageTtl must be > 0.");
 
         ValidateClaimCheck(options);
+        ValidateOutbox(options);
     }
 
     public static void ValidateDefinitions(IEnumerable<IConsumerDefinition> definitions)
@@ -91,5 +92,24 @@ internal static class MongoBusConfigValidator
 
         if (cc.Cleanup.MinimumAge > TimeSpan.Zero && cc.Cleanup.MinimumAge <= options.ProcessedMessageTtl)
             throw new InvalidOperationException("ClaimCheck.Cleanup.MinimumAge must be greater than ProcessedMessageTtl when set.");
+    }
+
+    private static void ValidateOutbox(MongoBusOptions options)
+    {
+        var outbox = options.Outbox;
+        if (!outbox.Enabled)
+            return;
+
+        if (outbox.ProcessedMessageTtl <= TimeSpan.Zero)
+            throw new InvalidOperationException("Outbox.ProcessedMessageTtl must be > 0 when outbox is enabled.");
+
+        if (outbox.PollingInterval <= TimeSpan.Zero)
+            throw new InvalidOperationException("Outbox.PollingInterval must be > 0 when outbox is enabled.");
+
+        if (outbox.LockTime <= TimeSpan.Zero)
+            throw new InvalidOperationException("Outbox.LockTime must be > 0 when outbox is enabled.");
+
+        if (outbox.MaxAttempts < 1)
+            throw new InvalidOperationException("Outbox.MaxAttempts must be >= 1 when outbox is enabled.");
     }
 }
