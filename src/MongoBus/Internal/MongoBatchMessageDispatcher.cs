@@ -235,8 +235,10 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     private Task MarkProcessedAsync(IReadOnlyList<InboxMessage> messages, CancellationToken ct)
     {
         var ids = messages.Select(m => m.Id).ToArray();
+        var filter = Builders<InboxMessage>.Filter.In(x => x.Id, ids);
+
         return _inbox.UpdateManyAsync(
-            x => ids.Contains(x.Id),
+            filter,
             Builders<InboxMessage>.Update
                 .Set(x => x.Status, InboxStatus.Processed)
                 .Set(x => x.ProcessedUtc, DateTime.UtcNow)

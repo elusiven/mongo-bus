@@ -38,6 +38,14 @@ internal sealed class MongoBusRuntime : BackgroundService
         _definitions = definitions.ToList();
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (_definitions.Count > 0)
+            await BindTopologyAsync(cancellationToken);
+
+        await base.StartAsync(cancellationToken);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (_definitions.Count == 0)
@@ -46,8 +54,6 @@ internal sealed class MongoBusRuntime : BackgroundService
             await Task.Delay(Timeout.Infinite, stoppingToken);
             return;
         }
-
-        await BindTopologyAsync(stoppingToken);
 
         var batchDefinitions = _definitions.OfType<IBatchConsumerDefinition>().ToList();
         var singleDefinitions = _definitions.Where(d => d is not IBatchConsumerDefinition).ToList();
