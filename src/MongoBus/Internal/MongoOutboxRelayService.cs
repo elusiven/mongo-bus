@@ -125,8 +125,12 @@ internal sealed class MongoOutboxRelayService : BackgroundService
 
         if (!string.IsNullOrWhiteSpace(message.CloudEventId))
         {
+            var existingFilter = Builders<InboxMessage>.Filter.And(
+                Builders<InboxMessage>.Filter.Eq(x => x.CloudEventId, message.CloudEventId),
+                Builders<InboxMessage>.Filter.In(x => x.EndpointId, endpointIds));
+
             var existingEndpointIds = await _inbox
-                .Find(x => x.CloudEventId == message.CloudEventId && endpointIds.Contains(x.EndpointId))
+                .Find(existingFilter)
                 .Project(x => x.EndpointId)
                 .ToListAsync(ct);
             alreadyPublishedEndpoints = existingEndpointIds.ToHashSet(StringComparer.Ordinal);
