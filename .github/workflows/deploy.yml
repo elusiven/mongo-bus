@@ -18,6 +18,27 @@ jobs:
               with:
                   versionSpec: '5.x'
 
+            - name: Validate GitVersion config
+              run: |
+                set -euo pipefail
+                dotnet-gitversion "$GITHUB_WORKSPACE" /config GitVersion.yml /output json > gitversion-validate.json
+                python - <<'PY'
+                import json
+                import sys
+
+                with open("gitversion-validate.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                required = ["SemVer", "NuGetVersionV2", "FullSemVer"]
+                missing = [k for k in required if not data.get(k)]
+
+                if missing:
+                    print(f"::error::GitVersion JSON missing required keys: {', '.join(missing)}")
+                    sys.exit(1)
+
+                print(f"GitVersion config validated. SemVer={data['SemVer']} NuGetVersionV2={data['NuGetVersionV2']}")
+                PY
+
             - name: Determine Version
               id: gitversion
               uses: gittools/actions/gitversion/execute@v3.1.11
