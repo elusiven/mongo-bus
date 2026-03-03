@@ -367,7 +367,7 @@ app.MapMongoBusDashboard(); // Defaults to /mongobus
 app.MapMongoBusDashboard("/my-monitoring");
 ```
 
-The dashboard provides real-time (polling) updates for:
+The dashboard provides real-time polling updates for:
 - Overall message status counts (Pending, Processed, Dead).
 - Per-endpoint statistics.
 - Detailed logs of the most recent failures.
