@@ -1,5 +1,4 @@
 mode: Mainline
-next-version: 1.0.0
 commit-message-incrementing: Enabled
 major-version-bump-message: '\+semver:(major|breaking)'
 minor-version-bump-message: '\+semver:minor'
@@ -8,7 +7,7 @@ branches:
   main:
     regex: ^master$|^main$
     increment: Patch
-    is-main-branch: true
+    is-mainline: true
     commit-message-incrementing: Enabled
     prevent-increment-of-merged-branch-version: true
     track-merge-target: false
