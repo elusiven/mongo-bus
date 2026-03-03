@@ -1,4 +1,5 @@
-mode: ContinuousDeployment
+mode: Mainline
+next-version: 1.0.0
 commit-message-incrementing: Enabled
 major-version-bump-message: '\+semver:(major|breaking)'
 minor-version-bump-message: '\+semver:minor'
@@ -6,8 +7,8 @@ patch-version-bump-message: '\+semver:patch'
 branches:
   main:
     regex: ^master$|^main$
-    tag: 'ci'
     increment: Patch
+    is-main-branch: true
     commit-message-incrementing: Enabled
     prevent-increment-of-merged-branch-version: true
     track-merge-target: false
