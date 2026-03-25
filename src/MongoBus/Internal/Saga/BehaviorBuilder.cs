@@ -70,6 +70,15 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         return this;
     }
 
+    public BehaviorBuilder<TInstance, TMessage> SendAsync(
+        string endpointName,
+        string typeId,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<object>> factory)
+    {
+        _activities.Add(new SendAsyncActivity<TInstance, TMessage>(endpointName, typeId, factory));
+        return this;
+    }
+
     // --- Scheduling ---
 
     public BehaviorBuilder<TInstance, TMessage> Schedule<TTimeout>(
@@ -82,6 +91,19 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
             _activities.Add(new ScheduleWithTokenActivity<TInstance, TMessage, TTimeout>(schedule, factory, tokenSetter, delay));
         else
             _activities.Add(new ScheduleActivity<TInstance, TMessage, TTimeout>(schedule, factory, delay));
+        return this;
+    }
+
+    public BehaviorBuilder<TInstance, TMessage> ScheduleAsync<TTimeout>(
+        SagaSchedule<TInstance, TTimeout> schedule,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TTimeout>> factory,
+        Action<TInstance, string?>? tokenSetter = null,
+        TimeSpan? delay = null)
+    {
+        if (tokenSetter != null)
+            _activities.Add(new ScheduleWithTokenAsyncActivity<TInstance, TMessage, TTimeout>(schedule, factory, tokenSetter, delay));
+        else
+            _activities.Add(new ScheduleAsyncActivity<TInstance, TMessage, TTimeout>(schedule, factory, delay));
         return this;
     }
 
@@ -103,11 +125,28 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         return this;
     }
 
+    public BehaviorBuilder<TInstance, TMessage> RequestAsync<TRequest, TResponse>(
+        SagaRequest<TInstance, TRequest, TResponse> request,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TRequest>> factory,
+        Action<TInstance, string?> requestIdSetter)
+    {
+        _activities.Add(new RequestAsyncActivity<TInstance, TMessage, TRequest, TResponse>(request, factory, requestIdSetter));
+        return this;
+    }
+
     public BehaviorBuilder<TInstance, TMessage> Respond<TResponse>(
         string typeId,
         Func<SagaConsumeContext<TInstance, TMessage>, TResponse> factory)
     {
         _activities.Add(new RespondActivity<TInstance, TMessage, TResponse>(typeId, factory));
+        return this;
+    }
+
+    public BehaviorBuilder<TInstance, TMessage> RespondAsync<TResponse>(
+        string typeId,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TResponse>> factory)
+    {
+        _activities.Add(new RespondAsyncActivity<TInstance, TMessage, TResponse>(typeId, factory));
         return this;
     }
 

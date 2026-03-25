@@ -321,6 +321,15 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
         return this;
     }
 
+    public SagaWhenClause<TInstance, TMessage> SendAsync(
+        string endpointName,
+        string typeId,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<object>> factory)
+    {
+        _builder.SendAsync(endpointName, typeId, factory);
+        return this;
+    }
+
     public SagaWhenClause<TInstance, TMessage> If(
         Func<SagaConsumeContext<TInstance, TMessage>, bool> condition,
         Action<BehaviorBuilder<TInstance, TMessage>> thenBranch)
@@ -386,6 +395,14 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
         return this;
     }
 
+    public SagaWhenClause<TInstance, TMessage> RespondAsync<TResponse>(
+        string typeId,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TResponse>> factory)
+    {
+        _builder.RespondAsync(typeId, factory);
+        return this;
+    }
+
     public SagaWhenClause<TInstance, TMessage> Schedule<TTimeout>(
         SagaSchedule<TInstance, TTimeout> schedule,
         Func<SagaConsumeContext<TInstance, TMessage>, TTimeout> factory,
@@ -396,10 +413,38 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
         return this;
     }
 
+    public SagaWhenClause<TInstance, TMessage> ScheduleAsync<TTimeout>(
+        SagaSchedule<TInstance, TTimeout> schedule,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TTimeout>> factory,
+        Action<TInstance, string?>? tokenSetter = null,
+        TimeSpan? delay = null)
+    {
+        _builder.ScheduleAsync(schedule, factory, tokenSetter, delay);
+        return this;
+    }
+
     public SagaWhenClause<TInstance, TMessage> Unschedule<TTimeout>(
         Action<TInstance, string?> tokenSetter)
     {
         _builder.Unschedule<TTimeout>(tokenSetter);
+        return this;
+    }
+
+    public SagaWhenClause<TInstance, TMessage> Request<TRequest, TResponse>(
+        SagaRequest<TInstance, TRequest, TResponse> request,
+        Func<SagaConsumeContext<TInstance, TMessage>, TRequest> factory,
+        Action<TInstance, string?> requestIdSetter)
+    {
+        _builder.Request(request, factory, requestIdSetter);
+        return this;
+    }
+
+    public SagaWhenClause<TInstance, TMessage> RequestAsync<TRequest, TResponse>(
+        SagaRequest<TInstance, TRequest, TResponse> request,
+        Func<SagaConsumeContext<TInstance, TMessage>, Task<TRequest>> factory,
+        Action<TInstance, string?> requestIdSetter)
+    {
+        _builder.RequestAsync(request, factory, requestIdSetter);
         return this;
     }
 }

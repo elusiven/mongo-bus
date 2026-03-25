@@ -52,3 +52,46 @@ internal sealed class RequestActivity<TInstance, TMessage, TRequest, TResponse>(
         context.Saga.CurrentState = request.Pending.Name;
     }
 }
+
+internal sealed class RequestAsyncActivity<TInstance, TMessage, TRequest, TResponse>(
+    SagaRequest<TInstance, TRequest, TResponse> request,
+    Func<SagaConsumeContext<TInstance, TMessage>, Task<TRequest>> factory,
+    Action<TInstance, string?> requestIdSetter)
+    : ISagaActivity<TInstance, TMessage>
+    where TInstance : class, ISagaInstance
+{
+    public async Task ExecuteAsync(SagaConsumeContext<TInstance, TMessage> context)
+    {
+        var data = await factory(context);
+        var requestId = Guid.NewGuid().ToString("N");
+
+        requestIdSetter(context.Saga, requestId);
+
+        await context.Bus.PublishAsync(
+            request.RequestTypeId,
+            data,
+            id: requestId,
+            correlationId: context.Saga.CorrelationId,
+            causationId: context.Context.CloudEventId,
+            ct: context.CancellationToken);
+
+        if (request.Timeout > TimeSpan.Zero)
+        {
+            var timeoutData = new SagaTimeoutMessage
+            {
+                CorrelationId = context.Saga.CorrelationId,
+                RequestId = requestId
+            };
+
+            await context.Bus.PublishAsync(
+                request.RequestTypeId + ".timeout",
+                timeoutData,
+                deliverAt: DateTime.UtcNow.Add(request.Timeout),
+                correlationId: context.Saga.CorrelationId,
+                causationId: context.Context.CloudEventId,
+                ct: context.CancellationToken);
+        }
+
+        context.Saga.CurrentState = request.Pending.Name;
+    }
+}

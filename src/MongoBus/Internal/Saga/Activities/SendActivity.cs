@@ -25,3 +25,23 @@ internal sealed class SendActivity<TInstance, TMessage>(
             ct: context.CancellationToken);
     }
 }
+
+internal sealed class SendAsyncActivity<TInstance, TMessage>(
+    string endpointName,
+    string typeId,
+    Func<SagaConsumeContext<TInstance, TMessage>, Task<object>> factory)
+    : ISagaActivity<TInstance, TMessage>
+    where TInstance : class, ISagaInstance
+{
+    public async Task ExecuteAsync(SagaConsumeContext<TInstance, TMessage> context)
+    {
+        var data = await factory(context);
+        await context.Bus.PublishAsync(
+            typeId,
+            data,
+            subject: endpointName,
+            correlationId: context.Saga.CorrelationId,
+            causationId: context.Context.CloudEventId,
+            ct: context.CancellationToken);
+    }
+}
