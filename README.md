@@ -376,28 +376,26 @@ The dashboard provides real-time polling updates for:
 
 #### Securing the Dashboard
 
-By default, the dashboard is open. To restrict access, configure an authorization policy:
+By default, the dashboard is **secured** with a built-in authorization policy that requires the claim `scope = mongobus:dashboard`. Ensure your auth tokens include this scope, or override with your own policy.
 
 ```csharp
-// 1. Define a policy using your app's auth (scopes, roles, claims, etc.)
-builder.Services.AddAuthorization(auth =>
-{
-    auth.AddPolicy("MongoBusDashboard", policy =>
-        policy.RequireClaim("scope", "mongobus:dashboard"));
-});
+// Default: requires scope=mongobus:dashboard (no extra config needed)
+builder.Services.AddMongoBusDashboard();
 
-// 2. Pass the policy name to the dashboard
+// Override with your own policy:
 builder.Services.AddMongoBusDashboard(opt =>
-{
-    opt.AuthorizationPolicy = "MongoBusDashboard";
-});
+    opt.AuthorizationPolicy = "MyCustomPolicy");
 
-// 3. Ensure authentication/authorization middleware is registered
+// Disable for development:
+builder.Services.AddMongoBusDashboard(opt =>
+    opt.AuthorizationPolicy = null);
+
+// Ensure authentication/authorization middleware is registered:
 app.UseAuthentication();
 app.UseAuthorization();
 ```
 
-All dashboard routes (UI and API) will require the policy to pass. The policy is fully user-defined — use `RequireClaim` for OAuth2 scopes, `RequireRole` for role-based access, or any custom `IAuthorizationRequirement`.
+All dashboard routes (UI and API) require the policy to pass. The policy is fully user-defined — use `RequireClaim` for OAuth2 scopes, `RequireRole` for role-based access, or any custom `IAuthorizationRequirement`.
 
 ### Saga State Machines
 

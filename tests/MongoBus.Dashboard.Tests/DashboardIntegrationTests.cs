@@ -16,7 +16,7 @@ namespace MongoBus.Dashboard.Tests;
 public class DashboardIntegrationTests(MongoDbFixture fixture)
 {
     [Fact]
-    public async Task Dashboard_Ui_ShouldBeAccessible()
+    public async Task Dashboard_Ui_ShouldBeAccessible_WhenPolicyDisabled()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddRouting();
@@ -24,8 +24,8 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
             opt.ConnectionString = fixture.ConnectionString;
             opt.DatabaseName = "dashboard_ui_test";
         });
-        builder.Services.AddMongoBusDashboard();
-        
+        builder.Services.AddMongoBusDashboard(opt => opt.AuthorizationPolicy = null);
+
         var app = builder.Build();
         app.UseStaticFiles();
         app.UseRouting();
@@ -36,12 +36,10 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
         {
             using var handler = new HttpClientHandler { AllowAutoRedirect = false };
             using var client = new HttpClient(handler) { BaseAddress = new Uri(app.Urls.First()) };
-            
-            // Check redirect from /mongobus to /mongobus/index.html
+
             var response = await client.GetAsync("/mongobus");
             response.StatusCode.Should().Be(HttpStatusCode.Redirect);
-            
-            // Check index.html exists
+
             var indexResponse = await client.GetAsync("/mongobus/index.html");
             indexResponse.StatusCode.Should().Be(HttpStatusCode.OK);
             var content = await indexResponse.Content.ReadAsStringAsync();
@@ -54,7 +52,7 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
     }
 
     [Fact]
-    public async Task Dashboard_Api_ShouldBeAccessible()
+    public async Task Dashboard_Api_ShouldBeAccessible_WhenPolicyDisabled()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddRouting();
@@ -62,7 +60,7 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
             opt.ConnectionString = fixture.ConnectionString;
             opt.DatabaseName = "dashboard_api_test";
         });
-        builder.Services.AddMongoBusDashboard();
+        builder.Services.AddMongoBusDashboard(opt => opt.AuthorizationPolicy = null);
 
         var app = builder.Build();
         app.UseRouting();
@@ -82,7 +80,7 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
     }
 
     [Fact]
-    public async Task Dashboard_SagaApi_ShouldBeAccessible()
+    public async Task Dashboard_SagaApi_ShouldBeAccessible_WhenPolicyDisabled()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddRouting();
@@ -90,7 +88,7 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
             opt.ConnectionString = fixture.ConnectionString;
             opt.DatabaseName = "dashboard_saga_api_test";
         });
-        builder.Services.AddMongoBusDashboard();
+        builder.Services.AddMongoBusDashboard(opt => opt.AuthorizationPolicy = null);
 
         var app = builder.Build();
         app.UseRouting();
@@ -110,25 +108,19 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
     }
 
     [Fact]
-    public async Task Dashboard_WithPolicy_RejectsUnauthenticated()
+    public async Task Dashboard_DefaultPolicy_RejectsWithoutScope()
     {
         var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = "Production"; // Ensure not Development
         builder.Services.AddRouting();
         builder.Services.AddAuthentication("Test")
             .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
-        builder.Services.AddAuthorization(auth =>
-        {
-            auth.AddPolicy("DashboardPolicy", policy =>
-                policy.RequireClaim("scope", "mongobus:dashboard"));
-        });
         builder.Services.AddMongoBus(opt => {
             opt.ConnectionString = fixture.ConnectionString;
-            opt.DatabaseName = "dashboard_auth_reject_test";
+            opt.DatabaseName = "dashboard_default_policy_test";
         });
-        builder.Services.AddMongoBusDashboard(opt =>
-        {
-            opt.AuthorizationPolicy = "DashboardPolicy";
-        });
+        // Default policy: requires scope=mongobus:dashboard
+        builder.Services.AddMongoBusDashboard();
 
         var app = builder.Build();
         app.UseRouting();
@@ -141,11 +133,9 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
         {
             using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
 
-            // API should be forbidden without the required claim
             var apiResponse = await client.GetAsync("/mongobus/api/stats");
             apiResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
-            // UI should also be forbidden
             var uiResponse = await client.GetAsync("/mongobus/index.html");
             uiResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         }
@@ -156,16 +146,84 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
     }
 
     [Fact]
-    public async Task Dashboard_WithoutPolicy_RemainsOpen()
+    public async Task Dashboard_DisabledPolicy_ForDevelopment()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddRouting();
         builder.Services.AddMongoBus(opt => {
             opt.ConnectionString = fixture.ConnectionString;
-            opt.DatabaseName = "dashboard_no_auth_test";
+            opt.DatabaseName = "dashboard_dev_env_test";
         });
-        // No AuthorizationPolicy configured
-        builder.Services.AddMongoBusDashboard();
+        // In development, disable the policy by setting it to null
+        builder.Services.AddMongoBusDashboard(opt => opt.AuthorizationPolicy = null);
+
+        var app = builder.Build();
+        app.UseRouting();
+        app.MapMongoBusDashboard();
+
+        await app.StartAsync();
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var response = await client.GetAsync("/mongobus/api/stats");
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Dashboard_CustomPolicy_RejectsWithoutClaim()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = "Production";
+        builder.Services.AddRouting();
+        builder.Services.AddAuthentication("Test")
+            .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
+        builder.Services.AddAuthorization(auth =>
+        {
+            auth.AddPolicy("CustomDashboard", policy =>
+                policy.RequireClaim("scope", "custom:dashboard:view"));
+        });
+        builder.Services.AddMongoBus(opt => {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "dashboard_custom_policy_test";
+        });
+        builder.Services.AddMongoBusDashboard(opt =>
+            opt.AuthorizationPolicy = "CustomDashboard");
+
+        var app = builder.Build();
+        app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapMongoBusDashboard();
+
+        await app.StartAsync();
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var response = await client.GetAsync("/mongobus/api/stats");
+            response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Dashboard_NullPolicy_DashboardIsOpen()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = "Production";
+        builder.Services.AddRouting();
+        builder.Services.AddMongoBus(opt => {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "dashboard_null_policy_test";
+        });
+        builder.Services.AddMongoBusDashboard(opt => opt.AuthorizationPolicy = null);
 
         var app = builder.Build();
         app.UseRouting();
@@ -197,7 +255,6 @@ internal sealed class TestAuthHandler(
 {
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        // Authenticate successfully but with no claims
         var identity = new System.Security.Claims.ClaimsIdentity("Test");
         var principal = new System.Security.Claims.ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, "Test");
