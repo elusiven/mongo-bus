@@ -10,6 +10,7 @@ internal interface ISagaRepository<TInstance>
 {
     Task<TInstance?> FindAsync(string correlationId, CancellationToken ct);
     Task<TInstance?> FindByPropertyAsync<TProperty>(Expression<Func<TInstance, TProperty>> property, TProperty value, CancellationToken ct);
+    Task<TInstance?> FindByPropertyNameAsync(string propertyName, string value, CancellationToken ct);
     Task InsertAsync(TInstance instance, CancellationToken ct);
     Task UpdateAsync(TInstance instance, int expectedVersion, CancellationToken ct);
     Task DeleteAsync(string correlationId, CancellationToken ct);
@@ -31,6 +32,15 @@ internal sealed class MongoSagaRepository<TInstance>(IMongoCollection<TInstance>
         CancellationToken ct)
     {
         var filter = Builders<TInstance>.Filter.Eq(property, value);
+        return await collection.Find(filter).FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<TInstance?> FindByPropertyNameAsync(
+        string propertyName,
+        string value,
+        CancellationToken ct)
+    {
+        var filter = Builders<TInstance>.Filter.Eq(propertyName, value);
         return await collection.Find(filter).FirstOrDefaultAsync(ct);
     }
 

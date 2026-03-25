@@ -16,6 +16,7 @@ public abstract class MongoBusStateMachine<TInstance>
     private readonly Dictionary<string, SagaEventRegistration> _eventRegistrations = new();
     private readonly Dictionary<Type, int> _compositeEventBitPositions = new();
     private readonly List<CompositeEventConfig> _compositeEvents = [];
+    private readonly Dictionary<string, Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task>> _compositeBehaviors = new();
     private readonly HashSet<(string StateName, Type MessageType)> _ignoredEvents = [];
 
     private Func<TInstance, bool>? _completedPredicate;
@@ -117,6 +118,11 @@ public abstract class MongoBusStateMachine<TInstance>
         return new SagaWhenClause<TInstance>(typeof(TMessage), null, @event.TypeId, isIgnore: true);
     }
 
+    protected CompositeWhenClause<TInstance> When(SagaEvent @event)
+    {
+        return new CompositeWhenClause<TInstance>(@event.Name, this);
+    }
+
     // --- Composite Events ---
 
     protected void CompositeEvent(
@@ -191,6 +197,18 @@ public abstract class MongoBusStateMachine<TInstance>
     internal IReadOnlyDictionary<string, SagaEventRegistration> GetEventRegistrations() => _eventRegistrations;
 
     internal IReadOnlyList<CompositeEventConfig> GetCompositeEvents() => _compositeEvents;
+
+    internal Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task>? GetCompositeBehavior(string eventName)
+    {
+        return _compositeBehaviors.GetValueOrDefault(eventName);
+    }
+
+    internal void RegisterCompositeBehavior(
+        string eventName,
+        Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task> behavior)
+    {
+        _compositeBehaviors[eventName] = behavior;
+    }
 
     // --- Private Helpers ---
 
@@ -366,6 +384,88 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
     {
         _builder.Respond(typeId, factory);
         return this;
+    }
+}
+
+/// <summary>
+/// When clause for composite (non-generic) events.
+/// Stores behavior as a delegate since composite events have no associated message type.
+/// </summary>
+public sealed class CompositeWhenClause<TInstance>
+    where TInstance : class, ISagaInstance, new()
+{
+    private readonly string _eventName;
+    private readonly MongoBusStateMachine<TInstance> _stateMachine;
+    private readonly List<Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task>> _actions = [];
+
+    internal CompositeWhenClause(string eventName, MongoBusStateMachine<TInstance> stateMachine)
+    {
+        _eventName = eventName;
+        _stateMachine = stateMachine;
+    }
+
+    public CompositeWhenClause<TInstance> Then(Action<TInstance> action)
+    {
+        _actions.Add((instance, _, _, _) => { action(instance); return Task.CompletedTask; });
+        return this;
+    }
+
+    public CompositeWhenClause<TInstance> ThenAsync(Func<TInstance, Task> action)
+    {
+        _actions.Add((instance, _, _, _) => action(instance));
+        return this;
+    }
+
+    public CompositeWhenClause<TInstance> TransitionTo(SagaState state)
+    {
+        _actions.Add((instance, _, _, _) => { instance.CurrentState = state.Name; return Task.CompletedTask; });
+        return this;
+    }
+
+    public CompositeWhenClause<TInstance> Finalize()
+    {
+        _actions.Add((instance, _, _, _) => { instance.CurrentState = "Final"; return Task.CompletedTask; });
+        return this;
+    }
+
+    public CompositeWhenClause<TInstance> Publish<TPublish>(
+        string typeId,
+        Func<TInstance, TPublish> factory)
+    {
+        _actions.Add(async (instance, bus, context, ct) =>
+        {
+            var data = factory(instance);
+            await bus.PublishAsync(typeId, data!,
+                correlationId: instance.CorrelationId,
+                causationId: context.CloudEventId,
+                ct: ct);
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Builds and registers the composite behavior on the state machine.
+    /// Must be called to finalize the When clause (typically via implicit conversion in DuringAny/During).
+    /// </summary>
+    internal void Register()
+    {
+        var actions = _actions.ToList();
+        _stateMachine.RegisterCompositeBehavior(_eventName, async (instance, bus, context, ct) =>
+        {
+            foreach (var action in actions)
+                await action(instance, bus, context, ct);
+        });
+    }
+
+    /// <summary>
+    /// Implicit conversion to SagaWhenClause for use in Initially/During/DuringAny.
+    /// Registers the composite behavior as a side effect.
+    /// </summary>
+    public static implicit operator SagaWhenClause<TInstance>(CompositeWhenClause<TInstance> clause)
+    {
+        clause.Register();
+        // Return a no-op clause — actual behavior is stored separately
+        return new SagaWhenClause<TInstance>(typeof(object), null, "__composite__" + clause._eventName);
     }
 }
 

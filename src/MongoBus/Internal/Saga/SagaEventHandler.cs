@@ -52,7 +52,18 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         SagaEventRegistration registration,
         CancellationToken ct)
     {
-        var instance = await repository.FindAsync(correlationId, ct);
+        TInstance? instance;
+        if (registration.CorrelateByProperty != null)
+        {
+            var propertyValue = registration.CorrelateByProperty.MessageValueSelector(context);
+            instance = await repository.FindByPropertyNameAsync(
+                registration.CorrelateByProperty.InstancePropertyName, propertyValue, ct);
+        }
+        else
+        {
+            instance = await repository.FindAsync(correlationId, ct);
+        }
+
         var isNew = false;
 
         if (instance == null)
@@ -104,6 +115,33 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
 
         foreach (var activity in behavior)
             await activity.ExecuteAsync(sagaContext);
+
+        // Check composite events
+        var typeId = GetTypeId(context);
+        foreach (var composite in stateMachine.GetCompositeEvents())
+        {
+            var bitIndex = composite.RequiredEventTypeIds.IndexOf(typeId);
+            if (bitIndex < 0) continue;
+
+            var flagsProp = typeof(TInstance).GetProperty(composite.FlagsPropertyName);
+            if (flagsProp == null) continue;
+
+            var currentFlags = (int)flagsProp.GetValue(instance)!;
+            currentFlags |= (1 << bitIndex);
+            flagsProp.SetValue(instance, currentFlags);
+
+            if (currentFlags == composite.RequiredBitmask)
+            {
+                var compositeBehavior = stateMachine.GetCompositeBehavior(composite.EventName);
+                if (compositeBehavior != null)
+                {
+                    logger.LogDebug(
+                        "Composite event '{EventName}' satisfied for saga {CorrelationId}",
+                        composite.EventName, correlationId);
+                    await compositeBehavior(instance, bus, context, ct);
+                }
+            }
+        }
 
         // Persist
         instance.Version++;
