@@ -7,10 +7,23 @@ using MongoBus.Dashboard.Services;
 
 namespace MongoBus.Dashboard;
 
+public sealed class MongoBusDashboardOptions
+{
+    /// <summary>
+    /// The name of an authorization policy to apply to all dashboard routes.
+    /// When null, the dashboard is open to everyone (default).
+    /// Define the policy in your app using services.AddAuthorization().
+    /// </summary>
+    public string? AuthorizationPolicy { get; set; }
+}
+
 public static class MongoBusDashboardExtensions
 {
-    public static IServiceCollection AddMongoBusDashboard(this IServiceCollection services)
+    public static IServiceCollection AddMongoBusDashboard(this IServiceCollection services, Action<MongoBusDashboardOptions>? configure = null)
     {
+        var options = new MongoBusDashboardOptions();
+        configure?.Invoke(options);
+        services.AddSingleton(options);
         services.AddScoped<IMongoBusMonitoringService, MongoBusMonitoringService>();
         return services;
     }
@@ -19,37 +32,38 @@ public static class MongoBusDashboardExtensions
     {
         pattern = pattern.TrimEnd('/');
 
+        var options = endpoints.ServiceProvider.GetService<MongoBusDashboardOptions>();
         var assembly = typeof(MongoBusDashboardExtensions).Assembly;
         var fileProvider = new ManifestEmbeddedFileProvider(assembly, "wwwroot");
 
         // API Endpoints
-        endpoints.MapGet($"{pattern}/api/stats", async (IMongoBusMonitoringService monitoring, CancellationToken ct) =>
+        var statsEndpoint = endpoints.MapGet($"{pattern}/api/stats", async (IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
             return Results.Ok(await monitoring.GetStatsAsync(ct));
         });
 
-        endpoints.MapGet($"{pattern}/api/sagas", async (IMongoBusMonitoringService monitoring, CancellationToken ct) =>
+        var sagasEndpoint = endpoints.MapGet($"{pattern}/api/sagas", async (IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
             return Results.Ok(await monitoring.GetSagaCollectionsAsync(ct));
         });
 
-        endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/stats", async (string collection, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
+        var sagaStatsEndpoint = endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/stats", async (string collection, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
             return Results.Ok(await monitoring.GetSagaStatsAsync(collection, ct));
         });
 
-        endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/instances", async (string collection, string? state, int? skip, int? take, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
+        var sagaInstancesEndpoint = endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/instances", async (string collection, string? state, int? skip, int? take, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
             return Results.Ok(await monitoring.GetSagaInstancesAsync(collection, state, skip ?? 0, take ?? 50, ct));
         });
 
-        endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/history/{{correlationId}}", async (string collection, string correlationId, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
+        var sagaHistoryEndpoint = endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/history/{{correlationId}}", async (string collection, string correlationId, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
             return Results.Ok(await monitoring.GetSagaHistoryAsync(collection, correlationId, ct));
         });
 
         // Dashboard UI (Static Files)
-        endpoints.MapGet($"{pattern}/{{*path}}", async (string? path, HttpContext context) =>
+        var uiEndpoint = endpoints.MapGet($"{pattern}/{{*path}}", async (string? path, HttpContext context) =>
         {
             if (string.IsNullOrEmpty(path) || path == "/")
             {
@@ -72,6 +86,18 @@ public static class MongoBusDashboardExtensions
             context.Response.ContentType = contentType;
             await context.Response.SendFileAsync(fileInfo);
         });
+
+        // Apply authorization policy if configured
+        if (!string.IsNullOrEmpty(options?.AuthorizationPolicy))
+        {
+            var policy = options.AuthorizationPolicy;
+            statsEndpoint.RequireAuthorization(policy);
+            sagasEndpoint.RequireAuthorization(policy);
+            sagaStatsEndpoint.RequireAuthorization(policy);
+            sagaInstancesEndpoint.RequireAuthorization(policy);
+            sagaHistoryEndpoint.RequireAuthorization(policy);
+            uiEndpoint.RequireAuthorization(policy);
+        }
 
         return endpoints;
     }
