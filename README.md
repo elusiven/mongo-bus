@@ -372,6 +372,30 @@ The dashboard provides real-time polling updates for:
 - Overall message status counts (Pending, Processed, Dead).
 - Per-endpoint statistics.
 - Detailed logs of the most recent failures.
+- Saga instance browser with state distribution and transition history.
+
+#### Securing the Dashboard
+
+By default, the dashboard is **secured** with a built-in authorization policy that requires the claim `scope = mongobus:dashboard`. Ensure your auth tokens include this scope, or override with your own policy.
+
+```csharp
+// Default: requires scope=mongobus:dashboard (no extra config needed)
+builder.Services.AddMongoBusDashboard();
+
+// Override with your own policy:
+builder.Services.AddMongoBusDashboard(opt =>
+    opt.AuthorizationPolicy = "MyCustomPolicy");
+
+// Disable for development:
+builder.Services.AddMongoBusDashboard(opt =>
+    opt.AuthorizationPolicy = null);
+
+// Ensure authentication/authorization middleware is registered:
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+All dashboard routes (UI and API) require the policy to pass. The policy is fully user-defined — use `RequireClaim` for OAuth2 scopes, `RequireRole` for role-based access, or any custom `IAuthorizationRequirement`.
 
 ### Saga State Machines
 

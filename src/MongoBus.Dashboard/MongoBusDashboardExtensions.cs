@@ -11,10 +11,14 @@ public sealed class MongoBusDashboardOptions
 {
     /// <summary>
     /// The name of an authorization policy to apply to all dashboard routes.
-    /// When null, the dashboard is open to everyone (default).
-    /// Define the policy in your app using services.AddAuthorization().
+    /// Defaults to "MongoBusDashboard" which requires the claim scope=mongobus:dashboard.
+    /// Set to null to explicitly disable authorization (open dashboard).
+    /// Override with your own policy name for custom authorization logic.
     /// </summary>
-    public string? AuthorizationPolicy { get; set; }
+    public string? AuthorizationPolicy { get; set; } = DefaultPolicyName;
+
+    internal const string DefaultPolicyName = "MongoBusDashboard";
+    internal const string DefaultScope = "mongobus:dashboard";
 }
 
 public static class MongoBusDashboardExtensions
@@ -25,6 +29,15 @@ public static class MongoBusDashboardExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
         services.AddScoped<IMongoBusMonitoringService, MongoBusMonitoringService>();
+
+        // Register the default authorization policy if the user hasn't overridden or disabled it
+        if (options.AuthorizationPolicy == MongoBusDashboardOptions.DefaultPolicyName)
+        {
+            services.AddAuthorization(auth =>
+                auth.AddPolicy(MongoBusDashboardOptions.DefaultPolicyName, policy =>
+                    policy.RequireClaim("scope", MongoBusDashboardOptions.DefaultScope)));
+        }
+
         return services;
     }
 
