@@ -385,6 +385,23 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
         _builder.Respond(typeId, factory);
         return this;
     }
+
+    public SagaWhenClause<TInstance, TMessage> Schedule<TTimeout>(
+        SagaSchedule<TInstance, TTimeout> schedule,
+        Func<SagaConsumeContext<TInstance, TMessage>, TTimeout> factory,
+        Action<TInstance, string?>? tokenSetter = null,
+        TimeSpan? delay = null)
+    {
+        _builder.Schedule(schedule, factory, tokenSetter, delay);
+        return this;
+    }
+
+    public SagaWhenClause<TInstance, TMessage> Unschedule<TTimeout>(
+        Action<TInstance, string?> tokenSetter)
+    {
+        _builder.Unschedule<TTimeout>(tokenSetter);
+        return this;
+    }
 }
 
 /// <summary>
