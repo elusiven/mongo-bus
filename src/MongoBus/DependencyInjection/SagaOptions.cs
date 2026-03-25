@@ -25,6 +25,10 @@ public sealed class SagaOptions
     public bool HistoryEnabled { get; set; }
     public TimeSpan HistoryTtl { get; set; } = TimeSpan.FromDays(30);
 
+    public TimeSpan SagaTimeout { get; set; } = TimeSpan.Zero;
+    public string TimeoutStateName { get; set; } = "TimedOut";
+    public TimeSpan TimeoutScanInterval { get; set; } = TimeSpan.FromSeconds(30);
+
     public ExceptionRetryMode RetryMode { get; set; } = ExceptionRetryMode.DenyList;
     public List<Type> NoRetryExceptions { get; set; } = [];
     public List<Type> RetryExceptions { get; set; } = [];

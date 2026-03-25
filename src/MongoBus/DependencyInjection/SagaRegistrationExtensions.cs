@@ -70,6 +70,15 @@ public static class SagaRegistrationExtensions
             RegisterSagaEventHandler(services, typeof(TStateMachine), typeof(TInstance), messageType, typeId, endpointName, options);
         }
 
+        if (options.SagaTimeout > TimeSpan.Zero)
+        {
+            services.AddHostedService(sp => new SagaTimeoutService<TInstance>(
+                sp.GetRequiredService<IMongoDatabase>(),
+                options,
+                sp.GetService<SagaHistoryWriter<TInstance>>(),
+                sp.GetRequiredService<ILogger<SagaTimeoutService<TInstance>>>()));
+        }
+
         services.AddHostedService(sp => new SagaIndexesHostedService<TInstance>(
             sp.GetRequiredService<IMongoDatabase>(),
             collectionName,
