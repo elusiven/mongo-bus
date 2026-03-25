@@ -62,7 +62,7 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
             opt.DatabaseName = "dashboard_api_test";
         });
         builder.Services.AddMongoBusDashboard();
-        
+
         var app = builder.Build();
         app.UseRouting();
         app.MapMongoBusDashboard();
@@ -72,6 +72,34 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
         {
             using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
             var response = await client.GetAsync("/mongobus/api/stats");
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Dashboard_SagaApi_ShouldBeAccessible()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddRouting();
+        builder.Services.AddMongoBus(opt => {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "dashboard_saga_api_test";
+        });
+        builder.Services.AddMongoBusDashboard();
+
+        var app = builder.Build();
+        app.UseRouting();
+        app.MapMongoBusDashboard();
+
+        await app.StartAsync();
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var response = await client.GetAsync("/mongobus/api/sagas");
             response.StatusCode.Should().Be(HttpStatusCode.OK);
         }
         finally

@@ -11,6 +11,14 @@
         .card-pending { background-color: #007bff; }
         .card-processed { background-color: #28a745; }
         .card-dead { background-color: #dc3545; }
+        .saga-collection-btn { cursor: pointer; }
+        .saga-collection-btn.active { background-color: #0d6efd !important; color: white !important; }
+        .saga-state-badge { font-size: 0.85rem; margin-right: 6px; margin-bottom: 4px; display: inline-block; }
+        .saga-history-row td { font-size: 0.9rem; }
+        .saga-link { cursor: pointer; color: #0d6efd; text-decoration: underline; }
+        .saga-link:hover { color: #0a58ca; }
+        #saga-detail { display: none; }
+        #saga-history-panel { display: none; }
     </style>
 </head>
 <body>
@@ -21,76 +29,167 @@
 </nav>
 
 <div class="container">
-    <div class="row" id="counters">
-        <div class="col-md-4">
-            <div class="card-counter card-pending">
-                <span class="fs-4">Pending</span>
-                <h2 id="pending-count">-</h2>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card-counter card-processed">
-                <span class="fs-4">Processed</span>
-                <h2 id="processed-count">-</h2>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card-counter card-dead">
-                <span class="fs-4">Dead</span>
-                <h2 id="dead-count">-</h2>
-            </div>
-        </div>
-    </div>
+    <ul class="nav nav-tabs mb-4" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-messages" type="button" role="tab">Messages</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-sagas" type="button" role="tab" onclick="loadSagas()">Sagas</button>
+        </li>
+    </ul>
 
-    <div class="row mt-4">
-        <div class="col-md-12">
-            <h3>Endpoints</h3>
-            <div class="card">
-                <div class="card-body">
-                    <table class="table table-striped">
-                        <thead>
-                        <tr>
-                            <th>Endpoint ID</th>
-                            <th>Pending</th>
-                            <th>Processed</th>
-                            <th>Dead</th>
-                        </tr>
-                        </thead>
-                        <tbody id="endpoint-stats">
-                        </tbody>
-                    </table>
+    <div class="tab-content">
+        <!-- Messages Tab -->
+        <div class="tab-pane fade show active" id="tab-messages" role="tabpanel">
+            <div class="row" id="counters">
+                <div class="col-md-4">
+                    <div class="card-counter card-pending">
+                        <span class="fs-4">Pending</span>
+                        <h2 id="pending-count">-</h2>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-counter card-processed">
+                        <span class="fs-4">Processed</span>
+                        <h2 id="processed-count">-</h2>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-counter card-dead">
+                        <span class="fs-4">Dead</span>
+                        <h2 id="dead-count">-</h2>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <h3>Endpoints</h3>
+                    <div class="card">
+                        <div class="card-body">
+                            <table class="table table-striped">
+                                <thead>
+                                <tr>
+                                    <th>Endpoint ID</th>
+                                    <th>Pending</th>
+                                    <th>Processed</th>
+                                    <th>Dead</th>
+                                </tr>
+                                </thead>
+                                <tbody id="endpoint-stats">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <h3>Recent Failures</h3>
+                    <div class="card">
+                        <div class="card-body">
+                            <table class="table table-hover">
+                                <thead class="table-danger">
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Endpoint</th>
+                                    <th>Type</th>
+                                    <th>Error</th>
+                                </tr>
+                                </thead>
+                                <tbody id="recent-failures">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <div class="row mt-4">
-        <div class="col-md-12">
-            <h3>Recent Failures</h3>
-            <div class="card">
-                <div class="card-body">
-                    <table class="table table-hover">
-                        <thead class="table-danger">
-                        <tr>
-                            <th>Time</th>
-                            <th>Endpoint</th>
-                            <th>Type</th>
-                            <th>Error</th>
-                        </tr>
-                        </thead>
-                        <tbody id="recent-failures">
-                        </tbody>
-                    </table>
+        <!-- Sagas Tab -->
+        <div class="tab-pane fade" id="tab-sagas" role="tabpanel">
+            <div class="row">
+                <div class="col-md-4">
+                    <h5>Saga Types</h5>
+                    <div id="saga-collections" class="list-group">
+                        <div class="text-muted">Loading...</div>
+                    </div>
+                </div>
+                <div class="col-md-8" id="saga-detail">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 id="saga-detail-title">-</h5>
+                        <span class="badge bg-secondary" id="saga-total-count">-</span>
+                    </div>
+                    <div id="saga-state-badges" class="mb-3"></div>
+
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6>Instances</h6>
+                        <div>
+                            <select id="saga-state-filter" class="form-select form-select-sm d-inline-block" style="width: auto;" onchange="loadSagaInstances()">
+                                <option value="">All States</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body p-0">
+                            <table class="table table-striped table-sm mb-0">
+                                <thead>
+                                <tr>
+                                    <th>Correlation ID</th>
+                                    <th>State</th>
+                                    <th>Version</th>
+                                    <th>Created</th>
+                                    <th>Modified</th>
+                                </tr>
+                                </thead>
+                                <tbody id="saga-instances">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-2">
+                        <button class="btn btn-sm btn-outline-secondary" id="saga-prev-btn" onclick="sagaPaginate(-1)" disabled>Previous</button>
+                        <span class="text-muted small align-self-center" id="saga-page-info"></span>
+                        <button class="btn btn-sm btn-outline-secondary" id="saga-next-btn" onclick="sagaPaginate(1)">Next</button>
+                    </div>
+
+                    <!-- History Panel -->
+                    <div id="saga-history-panel" class="mt-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6>Transition History <small class="text-muted" id="saga-history-id"></small></h6>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="closeHistory()">Close</button>
+                        </div>
+                        <div class="card">
+                            <div class="card-body p-0">
+                                <table class="table table-sm table-hover mb-0">
+                                    <thead class="table-light">
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Previous</th>
+                                        <th></th>
+                                        <th>New</th>
+                                        <th>Event</th>
+                                        <th>Version</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody id="saga-history">
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    // --- Messages Tab ---
     async function updateStats() {
         try {
-            // Use relative path for API to work when hosted under a subpath
             const response = await fetch('api/stats');
             const data = await response.json();
 
@@ -123,6 +222,194 @@
 
     setInterval(updateStats, 5000);
     updateStats();
+
+    // --- Sagas Tab ---
+    let selectedCollection = null;
+    let sagaSkip = 0;
+    const sagaPageSize = 20;
+
+    async function loadSagas() {
+        try {
+            const response = await fetch('api/sagas');
+            const collections = await response.json();
+            const container = document.getElementById('saga-collections');
+            container.innerHTML = '';
+
+            if (collections.length === 0) {
+                container.innerHTML = '<div class="text-muted p-2">No saga collections found</div>';
+                document.getElementById('saga-detail').style.display = 'none';
+                return;
+            }
+
+            collections.forEach(c => {
+                const displayName = c.replace('bus_saga_', '');
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'list-group-item list-group-item-action saga-collection-btn' +
+                    (c === selectedCollection ? ' active' : '');
+                btn.textContent = displayName;
+                btn.onclick = () => selectSagaCollection(c);
+                container.appendChild(btn);
+            });
+
+            if (!selectedCollection && collections.length > 0) {
+                selectSagaCollection(collections[0]);
+            } else if (selectedCollection) {
+                selectSagaCollection(selectedCollection);
+            }
+        } catch (error) {
+            console.error('Error fetching saga collections:', error);
+        }
+    }
+
+    async function selectSagaCollection(collection) {
+        selectedCollection = collection;
+        sagaSkip = 0;
+        document.getElementById('saga-detail').style.display = 'block';
+        document.getElementById('saga-history-panel').style.display = 'none';
+
+        document.querySelectorAll('.saga-collection-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.saga-collection-btn').forEach(b => {
+            if (b.textContent === collection.replace('bus_saga_', '')) b.classList.add('active');
+        });
+
+        const displayName = collection.replace('bus_saga_', '');
+        document.getElementById('saga-detail-title').textContent = displayName;
+
+        await Promise.all([loadSagaStats(collection), loadSagaInstances()]);
+    }
+
+    async function loadSagaStats(collection) {
+        try {
+            const response = await fetch(`api/sagas/${encodeURIComponent(collection)}/stats`);
+            const stats = await response.json();
+
+            document.getElementById('saga-total-count').textContent = `${stats.totalInstances} instances`;
+
+            const badgesEl = document.getElementById('saga-state-badges');
+            badgesEl.innerHTML = '';
+            const filterEl = document.getElementById('saga-state-filter');
+            const currentFilter = filterEl.value;
+            filterEl.innerHTML = '<option value="">All States</option>';
+
+            const stateColors = {
+                'Initial': 'secondary', 'Final': 'dark', 'TimedOut': 'danger',
+                'Dead': 'danger', 'Faulted': 'danger', 'Error': 'danger'
+            };
+
+            stats.byState.forEach(s => {
+                const color = stateColors[s.state] || 'primary';
+                badgesEl.innerHTML += `<span class="badge bg-${color} saga-state-badge">${s.state}: ${s.count}</span>`;
+                const opt = document.createElement('option');
+                opt.value = s.state;
+                opt.textContent = `${s.state} (${s.count})`;
+                filterEl.appendChild(opt);
+            });
+
+            filterEl.value = currentFilter;
+        } catch (error) {
+            console.error('Error fetching saga stats:', error);
+        }
+    }
+
+    async function loadSagaInstances() {
+        if (!selectedCollection) return;
+        try {
+            const stateFilter = document.getElementById('saga-state-filter').value;
+            const params = new URLSearchParams({ skip: sagaSkip, take: sagaPageSize });
+            if (stateFilter) params.set('state', stateFilter);
+
+            const response = await fetch(`api/sagas/${encodeURIComponent(selectedCollection)}/instances?${params}`);
+            const instances = await response.json();
+
+            const tbody = document.getElementById('saga-instances');
+            tbody.innerHTML = '';
+
+            if (instances.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">No instances</td></tr>';
+            }
+
+            instances.forEach(inst => {
+                const corrId = inst.CorrelationId || inst.correlationId || '-';
+                const state = inst.CurrentState || inst.currentState || '-';
+                const version = inst.Version ?? inst.version ?? '-';
+                const created = inst.CreatedUtc || inst.createdUtc;
+                const modified = inst.LastModifiedUtc || inst.lastModifiedUtc;
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><span class="saga-link" onclick="showHistory('${corrId}')">${corrId}</span></td>
+                    <td><span class="badge bg-${getStateColor(state)}">${state}</span></td>
+                    <td>${version}</td>
+                    <td>${created ? new Date(created).toLocaleString() : '-'}</td>
+                    <td>${modified ? new Date(modified).toLocaleString() : '-'}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            document.getElementById('saga-prev-btn').disabled = sagaSkip === 0;
+            document.getElementById('saga-next-btn').disabled = instances.length < sagaPageSize;
+            document.getElementById('saga-page-info').textContent =
+                `Showing ${sagaSkip + 1}-${sagaSkip + instances.length}`;
+        } catch (error) {
+            console.error('Error fetching saga instances:', error);
+        }
+    }
+
+    function sagaPaginate(direction) {
+        sagaSkip = Math.max(0, sagaSkip + direction * sagaPageSize);
+        loadSagaInstances();
+    }
+
+    async function showHistory(correlationId) {
+        if (!selectedCollection) return;
+        const historyCollection = selectedCollection.replace('bus_saga_', 'bus_saga_history_');
+
+        document.getElementById('saga-history-panel').style.display = 'block';
+        document.getElementById('saga-history-id').textContent = correlationId;
+
+        try {
+            const response = await fetch(`api/sagas/${encodeURIComponent(historyCollection)}/history/${encodeURIComponent(correlationId)}`);
+            const entries = await response.json();
+
+            const tbody = document.getElementById('saga-history');
+            tbody.innerHTML = '';
+
+            if (entries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-muted text-center">No history (history may not be enabled)</td></tr>';
+                return;
+            }
+
+            entries.forEach(e => {
+                const row = document.createElement('tr');
+                row.className = 'saga-history-row';
+                row.innerHTML = `
+                    <td>${new Date(e.timestampUtc).toLocaleString()}</td>
+                    <td><span class="badge bg-${getStateColor(e.previousState)}">${e.previousState}</span></td>
+                    <td>&rarr;</td>
+                    <td><span class="badge bg-${getStateColor(e.newState)}">${e.newState}</span></td>
+                    <td><code>${e.eventTypeId}</code></td>
+                    <td>${e.versionAfter}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        } catch (error) {
+            console.error('Error fetching saga history:', error);
+        }
+    }
+
+    function closeHistory() {
+        document.getElementById('saga-history-panel').style.display = 'none';
+    }
+
+    function getStateColor(state) {
+        const colors = {
+            'Initial': 'secondary', 'Final': 'dark', 'TimedOut': 'danger',
+            'Dead': 'danger', 'Faulted': 'danger', 'Error': 'danger',
+            'Completed': 'success', 'Processed': 'success'
+        };
+        return colors[state] || 'primary';
+    }
 </script>
 </body>
 </html>
