@@ -11,6 +11,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
     ISagaRepository<TInstance> repository,
     IMessageBus bus,
     SagaPartitioner? partitioner,
+    SagaHistoryWriter<TInstance>? historyWriter,
     ILogger logger)
     : IMessageHandler<TMessage>
     where TInstance : class, ISagaInstance, new()
@@ -111,6 +112,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             instance, message, context, bus, ct);
 
         var previousVersion = instance.Version;
+        var previousState = instance.CurrentState;
         instance.LastModifiedUtc = DateTime.UtcNow;
 
         foreach (var activity in behavior)
@@ -149,6 +151,14 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             await repository.InsertAsync(instance, ct);
         else
             await repository.UpdateAsync(instance, previousVersion, ct);
+
+        // Write history entry
+        if (historyWriter != null)
+        {
+            await historyWriter.WriteAsync(
+                correlationId, previousState, instance.CurrentState,
+                GetTypeId(context), context, instance.Version, ct);
+        }
 
         // Auto-purge if completed
         if (stateMachine.IsCompleted(instance))

@@ -55,6 +55,12 @@ public static class SagaRegistrationExtensions
             services.AddSingleton(new SagaPartitioner(options.DefaultPartitionCount));
         }
 
+        if (options.HistoryEnabled)
+        {
+            services.AddSingleton(sp =>
+                new SagaHistoryWriter<TInstance>(sp.GetRequiredService<IMongoDatabase>()));
+        }
+
         foreach (var registration in stateMachine.GetEventRegistrations())
         {
             var typeId = registration.Key;
@@ -92,9 +98,11 @@ public static class SagaRegistrationExtensions
             var repo = sp.GetRequiredService(repoType);
             var bus = sp.GetRequiredService<IMessageBus>();
             var partitioner = sp.GetService<SagaPartitioner>();
+            var historyWriterType = typeof(SagaHistoryWriter<>).MakeGenericType(instanceType);
+            var historyWriter = sp.GetService(historyWriterType);
             var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(handlerType);
 
-            return Activator.CreateInstance(handlerType, sm, repo, bus, partitioner, logger)!;
+            return Activator.CreateInstance(handlerType, sm, repo, bus, partitioner, historyWriter, logger)!;
         });
 
         services.AddScoped(handlerType, sp => sp.GetRequiredService(handlerInterface));

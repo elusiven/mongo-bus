@@ -22,6 +22,9 @@ public sealed class SagaOptions
 
     public TimeSpan SagaInstanceTtl { get; set; } = TimeSpan.Zero;
 
+    public bool HistoryEnabled { get; set; }
+    public TimeSpan HistoryTtl { get; set; } = TimeSpan.FromDays(30);
+
     public ExceptionRetryMode RetryMode { get; set; } = ExceptionRetryMode.DenyList;
     public List<Type> NoRetryExceptions { get; set; } = [];
     public List<Type> RetryExceptions { get; set; } = [];

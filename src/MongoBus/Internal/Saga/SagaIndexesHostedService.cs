@@ -46,6 +46,33 @@ internal sealed class SagaIndexesHostedService<TInstance>(
             log.LogInformation(
                 "Created {Count} indexes on saga collection '{Collection}'",
                 indexes.Count, collectionName);
+
+            // Create history collection indexes if history is enabled
+            if (options.HistoryEnabled)
+            {
+                var historyCollectionName = $"bus_saga_history_{MongoBus.Utils.EndpointNameHelper.FromConsumerType(typeof(TInstance))}";
+                var historyCollection = db.GetCollection<MongoBus.Models.Saga.SagaHistoryEntry>(historyCollectionName);
+
+                var historyIndexes = new List<CreateIndexModel<MongoBus.Models.Saga.SagaHistoryEntry>>
+                {
+                    new(
+                        Builders<MongoBus.Models.Saga.SagaHistoryEntry>.IndexKeys.Ascending(x => x.CorrelationId),
+                        new CreateIndexOptions { Name = "ix_correlation_id" }),
+                    new(
+                        Builders<MongoBus.Models.Saga.SagaHistoryEntry>.IndexKeys.Ascending(x => x.TimestampUtc),
+                        new CreateIndexOptions
+                        {
+                            Name = "ix_ttl",
+                            ExpireAfter = options.HistoryTtl
+                        })
+                };
+
+                await historyCollection.Indexes.CreateManyAsync(historyIndexes, ct);
+
+                log.LogInformation(
+                    "Created {Count} indexes on saga history collection '{Collection}'",
+                    historyIndexes.Count, historyCollectionName);
+            }
         }
         catch (Exception ex)
         {
