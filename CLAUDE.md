@@ -94,6 +94,12 @@ Consumers are defined via `ConsumerDefinition<TConsumer, TMessage>` (single) or 
 - Prefer real dependencies over mocks; unit tests only for complex algorithms or pure domain logic
 - Clean Architecture: dependencies flow inward, infrastructure is replaceable
 
+## Git Workflow
+
+- **Never push directly to `main`** — always create a feature branch and open a PR via `gh pr create`
+- Use `+semver:minor` for new features, `+semver:patch` for fixes/docs, `+semver:major` for breaking changes — append to PR title or commit message
+- Branch naming: `feat/description`, `fix/description`, `test/description`, `docs/description`
+
 ## Versioning & CI
 
 - GitVersion 5.x mainline mode — version derived from git history
