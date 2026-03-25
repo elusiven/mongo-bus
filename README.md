@@ -465,9 +465,33 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `Switch` | Multi-case branching |
 | `Catch<T>` / `CatchAll` | Exception handling |
 
+#### Saga Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ConcurrencyLimit` | 16 | Max concurrent event handlers per saga type |
+| `PrefetchCount` | 64 | Channel capacity for prefetched messages |
+| `LockTime` | 60s | How long a message lock is held |
+| `MaxAttempts` | 10 | Max retry attempts before dead-lettering |
+| `IdempotencyEnabled` | false | Deduplicate events by CloudEvent ID |
+| `HistoryEnabled` | false | Record state transitions in an audit log collection |
+| `HistoryTtl` | 30 days | TTL for history entries |
+| `SagaTimeout` | disabled | Auto-transition expired sagas to a timeout state |
+| `TimeoutStateName` | "TimedOut" | Target state for timed-out sagas |
+| `TimeoutScanInterval` | 30s | How often the timeout service scans |
+| `SagaInstanceTtl` | disabled | TTL index on saga instances for auto-cleanup |
+| `DefaultPartitionCount` | 0 (disabled) | Hash-based partition locking for concurrent access |
+| `RetryMode` | DenyList | `DenyList` (retry all except listed) or `AllowList` (retry only listed) |
+
 #### Saga Dashboard
 
-The monitoring dashboard includes saga-specific endpoints:
+The monitoring dashboard includes a **Sagas** tab with:
+- Saga type browser (auto-discovered from `bus_saga_*` collections)
+- State distribution badges per saga type
+- Paginated instance table with state filter
+- Transition history timeline (when `HistoryEnabled = true`)
+
+API endpoints:
 
 ```
 GET /mongobus/api/sagas                              — List saga collections
@@ -476,22 +500,15 @@ GET /mongobus/api/sagas/{collection}/instances        — Paginated instance lis
 GET /mongobus/api/sagas/{collection}/history/{id}     — Transition history
 ```
 
-## Roadmap
-
-Future improvements planned for MongoBus:
-
-- [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.
-
 ## Samples
 
 Check out the `samples/MongoBus.Sample` project for a complete working example showcasing:
-- Multiple message types.
-- Custom endpoint naming.
-- Publishing and consuming flow.
-- Structured logging.
-- Batch consumers, grouping, and backpressure.
-- Observers (publish/consume/batch) and interceptors.
-- Claim-check and delayed delivery.
+- Multiple message types and custom endpoint naming
+- Publishing, consuming, batch consumers with grouping and backpressure
+- Observers (publish/consume/batch) and interceptors
+- Claim-check, delayed delivery, and transactional outbox
+- **Simple saga**: OrderSubmitted → PaymentPending → Completed workflow
+- **Comprehensive fulfillment saga**: 8 states, conditional routing (IfElse for high-value orders), compensation (refund on inventory failure), DuringAny cancellation, exception handling, notifications on every transition, idempotency, history, and partitioning
 
 ## Testing
 
