@@ -22,7 +22,8 @@ A MongoDB-backed message bus for .NET using CloudEvents for polyglot interop.
 - **Claim Check Pattern**: Automatically offload large message payloads to external blob storage and retrieve them on consume.
 - **Middleware Support**: Ability to plug in custom logic for publishing and consuming pipelines (Interceptors).
 - **OpenTelemetry Support**: Native integration for distributed tracing with automatic context propagation.
-- **Monitoring UI**: A dashboard to visualize message rates, failures, and dead-lettered messages.
+- **Saga State Machines**: Declarative state machines for orchestrating long-running workflows with optimistic concurrency, history/audit log, and timeout support.
+- **Monitoring UI**: A dashboard to visualize message rates, failures, dead-lettered messages, and saga instances.
 - **Type Safety**: Strong typing for messages and handlers while maintaining loose coupling via `TypeId` strings.
 
 ## Getting Started
@@ -372,12 +373,113 @@ The dashboard provides real-time polling updates for:
 - Per-endpoint statistics.
 - Detailed logs of the most recent failures.
 
+### Saga State Machines
+
+MongoBus includes a built-in saga/state machine framework for orchestrating long-running workflows.
+
+#### Defining a Saga
+
+```csharp
+// 1. Define your saga state
+public class OrderSagaState : ISagaInstance
+{
+    public string CorrelationId { get; set; } = default!;
+    public string CurrentState { get; set; } = default!;
+    public int Version { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime LastModifiedUtc { get; set; }
+
+    // Custom properties
+    public decimal OrderTotal { get; set; }
+    public bool PaymentReceived { get; set; }
+}
+
+// 2. Define your state machine
+public class OrderSagaStateMachine : MongoBusStateMachine<OrderSagaState>
+{
+    public SagaState Submitted { get; private set; }
+    public SagaState PaymentPending { get; private set; }
+    public SagaState Completed { get; private set; }
+
+    public SagaEvent<OrderSubmitted> OrderSubmittedEvent { get; private set; }
+    public SagaEvent<PaymentReceived> PaymentReceivedEvent { get; private set; }
+    public SagaEvent<OrderCancelled> OrderCancelledEvent { get; private set; }
+
+    public OrderSagaStateMachine()
+    {
+        Event(() => OrderSubmittedEvent, "orders.v1.submitted", e =>
+            e.CorrelateById(ctx => ctx.CorrelationId!));
+        Event(() => PaymentReceivedEvent, "payments.v1.received", e =>
+            e.CorrelateById(ctx => ctx.CorrelationId!));
+        Event(() => OrderCancelledEvent, "orders.v1.cancelled", e =>
+            e.CorrelateById(ctx => ctx.CorrelationId!));
+
+        InstanceState(x => x.CurrentState);
+
+        Initially(
+            When(OrderSubmittedEvent)
+                .Then(ctx => ctx.Saga.OrderTotal = ctx.Message.Amount)
+                .Publish("notifications.v1.order-created", ctx => new { ctx.Saga.CorrelationId })
+                .TransitionTo(PaymentPending));
+
+        During(PaymentPending,
+            When(PaymentReceivedEvent)
+                .Then(ctx => ctx.Saga.PaymentReceived = true)
+                .TransitionTo(Completed)
+                .Finalize());
+
+        // Handle cancellation from any state
+        DuringAny(
+            When(OrderCancelledEvent).Finalize());
+
+        SetCompletedWhenFinalized(); // Auto-delete completed instances
+    }
+}
+
+// 3. Register the saga
+builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
+{
+    opt.ConcurrencyLimit = 16;
+    opt.HistoryEnabled = true;         // Enable audit log
+    opt.HistoryTtl = TimeSpan.FromDays(30);
+    opt.SagaTimeout = TimeSpan.FromHours(24); // Auto-expire after 24h
+    opt.SagaInstanceTtl = TimeSpan.FromDays(7); // TTL cleanup
+});
+```
+
+#### Available Activities
+
+| Activity | Description |
+|----------|-------------|
+| `Then` / `ThenAsync` | Execute custom logic |
+| `TransitionTo` | Change saga state |
+| `Finalize` | Move to Final state |
+| `Publish` / `PublishAsync` | Publish a message via the bus |
+| `Send` / `SendAsync` | Send to a specific endpoint |
+| `Schedule` / `ScheduleAsync` | Schedule a delayed message |
+| `Unschedule` | Clear a schedule token |
+| `Request` / `RequestAsync` | Publish request with timeout |
+| `Respond` / `RespondAsync` | Publish a response |
+| `If` / `IfAsync` | Conditional branching |
+| `IfElse` / `IfElseAsync` | If/else branching |
+| `Switch` | Multi-case branching |
+| `Catch<T>` / `CatchAll` | Exception handling |
+
+#### Saga Dashboard
+
+The monitoring dashboard includes saga-specific endpoints:
+
+```
+GET /mongobus/api/sagas                              — List saga collections
+GET /mongobus/api/sagas/{collection}/stats            — Instance counts by state
+GET /mongobus/api/sagas/{collection}/instances        — Paginated instance listing
+GET /mongobus/api/sagas/{collection}/history/{id}     — Transition history
+```
+
 ## Roadmap
 
 Future improvements planned for MongoBus:
 
-
-- [ ] **Distributed Transactions (SAGAs)**: Support for distributed transactions.
 - [ ] **Monitoring Dashboard Improvements**: Real-time updates via WebSockets/SignalR and historical charts.
 
 ## Samples

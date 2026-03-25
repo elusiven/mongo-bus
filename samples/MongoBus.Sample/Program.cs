@@ -2,8 +2,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
+using MongoBus.Abstractions.Saga;
 using MongoBus.DependencyInjection;
 using MongoBus.Models;
+using MongoBus.Models.Saga;
 using MongoBus.Dashboard;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -48,6 +50,15 @@ builder.Services.AddMongoBusConsumeObserver<SampleConsumeObserver>();
 builder.Services.AddMongoBusBatchObserver<SampleBatchObserver>();
 
 builder.Services.AddMongoBusInMemoryClaimCheck();
+
+// 6. Register Saga
+builder.Services.AddMongoBusSaga<SampleOrderSagaStateMachine, SampleOrderSagaState>(opt =>
+{
+    opt.HistoryEnabled = true;
+    opt.HistoryTtl = TimeSpan.FromDays(7);
+    opt.SagaTimeout = TimeSpan.FromHours(1);
+    opt.TimeoutScanInterval = TimeSpan.FromSeconds(30);
+});
 
 var app = builder.Build();
 
@@ -164,6 +175,23 @@ for (var i = 0; i < 5; i++)
         Amount = 10 + i
     }, subject: i % 2 == 0 ? "priority" : "standard");
 }
+
+// Saga demo: order workflow
+var sagaCorrelationId = Guid.NewGuid().ToString("N");
+await bus.PublishAsync("saga.orders.submitted", new SagaOrderSubmitted
+{
+    OrderId = "SAGA-001",
+    Amount = 249.99m
+}, correlationId: sagaCorrelationId);
+logger.LogInformation("Saga: Published OrderSubmitted for saga {CorrelationId}", sagaCorrelationId);
+
+await Task.Delay(1000);
+
+await bus.PublishAsync("saga.payments.received", new SagaPaymentReceived
+{
+    PaymentId = "PAY-001"
+}, correlationId: sagaCorrelationId);
+logger.LogInformation("Saga: Published PaymentReceived for saga {CorrelationId}", sagaCorrelationId);
 
 logger.LogInformation("Messages published. Waiting for processing... (Press Ctrl+C to exit)");
 
@@ -296,6 +324,80 @@ public class EmailNotificationDefinition : ConsumerDefinition<EmailNotificationH
     // Using default EndpointName (will be email-notification)
     public override int ConcurrencyLimit => 2;
     public override int PrefetchCount => 8;
+}
+
+// --- Saga Models ---
+
+public record SagaOrderSubmitted
+{
+    public string OrderId { get; init; } = "";
+    public decimal Amount { get; init; }
+}
+
+public record SagaPaymentReceived
+{
+    public string PaymentId { get; init; } = "";
+}
+
+public record SagaOrderConfirmation
+{
+    public string OrderId { get; init; } = "";
+    public string Status { get; init; } = "";
+}
+
+public class SampleOrderSagaState : ISagaInstance
+{
+    public string CorrelationId { get; set; } = default!;
+    public string CurrentState { get; set; } = default!;
+    public int Version { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime LastModifiedUtc { get; set; }
+
+    public string? OrderId { get; set; }
+    public decimal Amount { get; set; }
+    public bool PaymentReceived { get; set; }
+}
+
+public class SampleOrderSagaStateMachine : MongoBusStateMachine<SampleOrderSagaState>
+{
+    public SagaState Submitted { get; private set; }
+    public SagaState PaymentPending { get; private set; }
+    public SagaState Completed { get; private set; }
+
+    public SagaEvent<SagaOrderSubmitted> OrderSubmittedEvent { get; private set; }
+    public SagaEvent<SagaPaymentReceived> PaymentReceivedEvent { get; private set; }
+
+    public SampleOrderSagaStateMachine()
+    {
+        Event(() => OrderSubmittedEvent, "saga.orders.submitted", e =>
+            e.CorrelateById(ctx => ctx.CorrelationId!));
+        Event(() => PaymentReceivedEvent, "saga.payments.received", e =>
+            e.CorrelateById(ctx => ctx.CorrelationId!));
+
+        InstanceState(x => x.CurrentState);
+
+        Initially(
+            When(OrderSubmittedEvent)
+                .Then(ctx =>
+                {
+                    ctx.Saga.OrderId = ctx.Message.OrderId;
+                    ctx.Saga.Amount = ctx.Message.Amount;
+                })
+                .TransitionTo(PaymentPending));
+
+        During(PaymentPending,
+            When(PaymentReceivedEvent)
+                .Then(ctx => ctx.Saga.PaymentReceived = true)
+                .Publish("saga.orders.confirmed", ctx => new SagaOrderConfirmation
+                {
+                    OrderId = ctx.Saga.OrderId!,
+                    Status = "Confirmed"
+                })
+                .TransitionTo(Completed)
+                .Finalize());
+
+        SetCompletedWhenFinalized();
+    }
 }
 
 public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, OrderBatch>
