@@ -3,6 +3,7 @@ using MongoBus.Abstractions;
 using MongoBus.ClaimCheck;
 using MongoBus.Internal;
 using MongoBus.Internal.ClaimCheck;
+using MongoBus.Internal.Saga;
 using MongoDB.Driver;
 
 namespace MongoBus.DependencyInjection;
@@ -109,6 +110,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IMessageBus, MongoMessageBus>();
         services.AddSingleton<ITransactionalMessageBus, MongoTransactionalMessageBus>();
+        services.AddSingleton<MongoTransactionCapability>();
         services.AddSingleton<ITopologyManager, MongoBindingRegistry>();
         services.AddSingleton<IMessageDispatcher, MongoMessageDispatcher>();
         services.AddSingleton<IBatchMessageDispatcher, MongoBatchMessageDispatcher>();

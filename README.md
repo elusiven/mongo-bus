@@ -506,6 +506,8 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `SagaInstanceTtl` | disabled | TTL index on saga instances for auto-cleanup |
 | `DefaultPartitionCount` | 0 (disabled) | Hash-based partition locking for concurrent access |
 | `RetryMode` | DenyList | `DenyList` (retry all except listed) or `AllowList` (retry only listed) |
+| `UseOutbox` | false | Buffer saga publishes and write them with the saga state inside one Mongo transaction. Requires a replica set / sharded cluster and `MongoBusOptions.Outbox.Enabled = true`. See "Checkpoint Granularity & Mid-Flight Failures" below. |
+| `AllowFallbackWhenTransactionsUnsupported` | false | When `UseOutbox = true` but the connected deployment doesn't support transactions, fall back to direct publish (with a warning) instead of throwing. Use for dev/test against standalone Mongo. |
 
 #### Checkpoint Granularity & Mid-Flight Failures
 
@@ -586,6 +588,30 @@ A runnable end-to-end version of this pattern — including a fake external clie
 | External API supports idempotency keys | Multi-event saga **plus** pass `{CorrelationId}:{step}` as the idempotency key |
 
 Enabling `IdempotencyEnabled = true` on the saga options dedupes redelivered result events by CloudEvent id, which is recommended for the multi-event pattern.
+
+##### Transactional saga publishes (`UseOutbox`)
+
+Even without restructuring as a multi-event saga, you can close the *publish-leak* part of the problem — the case where a saga's `.Publish` / `.Send` activity fires successfully but the subsequent saga write fails, leaving an outbound message that doesn't match the saved saga state.
+
+Set `SagaOptions.UseOutbox = true` (and `MongoBusOptions.Outbox.Enabled = true`). The runtime then:
+
+1. Buffers every saga publish during the activity chain instead of sending it directly.
+2. Opens a Mongo session and starts a transaction.
+3. Writes the saga state, the history entry (if `HistoryEnabled = true`), and one outbox row per buffered publish — all inside the transaction.
+4. Commits. The `MongoOutboxRelayService` picks the rows up afterwards and forwards them to the inbox.
+
+If the commit aborts (concurrency conflict, transient Mongo error, anything else), no outbox rows survive and no publishes escape — the inbox redelivers the message and the next attempt starts from a known-clean state.
+
+```csharp
+builder.Services.AddMongoBusSaga<MetaPublishStateMachine, MetaPublishSagaState>(opt =>
+{
+    opt.UseOutbox = true;
+});
+```
+
+Requires MongoDB with multi-document transaction support — a replica set or sharded cluster. On a standalone Mongo, the saga handler throws an explicit error on first use. For dev/test against standalone, set `AllowFallbackWhenTransactionsUnsupported = true` and the runtime falls back to direct publish with a one-time warning.
+
+`UseOutbox` solves the publish-leak problem, but **not** the duplicate-external-call problem from non-idempotent HTTP APIs called from within the activity chain — those still need the multi-event pattern above (or external idempotency tokens). Use both together for workflows that orchestrate multiple non-idempotent external calls.
 
 #### Saga Dashboard
 

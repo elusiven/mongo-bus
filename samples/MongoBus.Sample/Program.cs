@@ -93,6 +93,11 @@ builder.Services.AddMongoBusSaga<
 {
     opt.HistoryEnabled = true;
     opt.IdempotencyEnabled = true;  // dedupe result events by CloudEvent id
+    // Bind saga publishes atomically to the saga write. On a replica set this uses
+    // a Mongo transaction; on standalone Mongo it falls back to direct publish with
+    // a startup warning so the sample stays runnable in either deployment.
+    opt.UseOutbox = true;
+    opt.AllowFallbackWhenTransactionsUnsupported = true;
 });
 
 var app = builder.Build();

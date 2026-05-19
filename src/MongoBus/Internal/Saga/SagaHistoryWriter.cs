@@ -19,6 +19,16 @@ internal sealed class SagaHistoryWriter<TInstance>
 
     public string CollectionName => _collection.CollectionNamespace.CollectionName;
 
+    public Task WriteAsync(
+        string correlationId,
+        string previousState,
+        string newState,
+        string eventTypeId,
+        ConsumeContext context,
+        int versionAfter,
+        CancellationToken ct)
+        => WriteAsync(correlationId, previousState, newState, eventTypeId, context, versionAfter, session: null, ct);
+
     public async Task WriteAsync(
         string correlationId,
         string previousState,
@@ -26,6 +36,7 @@ internal sealed class SagaHistoryWriter<TInstance>
         string eventTypeId,
         ConsumeContext context,
         int versionAfter,
+        IClientSessionHandle? session,
         CancellationToken ct)
     {
         var entry = new SagaHistoryEntry
@@ -40,6 +51,9 @@ internal sealed class SagaHistoryWriter<TInstance>
             VersionAfter = versionAfter
         };
 
-        await _collection.InsertOneAsync(entry, cancellationToken: ct);
+        if (session is null)
+            await _collection.InsertOneAsync(entry, cancellationToken: ct);
+        else
+            await _collection.InsertOneAsync(session, entry, cancellationToken: ct);
     }
 }

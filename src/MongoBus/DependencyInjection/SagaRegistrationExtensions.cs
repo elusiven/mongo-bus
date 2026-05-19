@@ -111,7 +111,26 @@ public static class SagaRegistrationExtensions
             var historyWriter = sp.GetService(historyWriterType);
             var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(handlerType);
 
-            return Activator.CreateInstance(handlerType, sm, repo, bus, partitioner, historyWriter, logger)!;
+            // UseOutbox needs the Mongo client, the transactional bus, and the capability
+            // probe. We resolve them unconditionally — they are always registered by
+            // AddMongoBus — so the handler can decide per-event whether to take the
+            // transactional path. Resolving up front keeps the hot path allocation-free.
+            var mongoClient = sp.GetRequiredService<IMongoClient>();
+            var transactionalBus = sp.GetRequiredService<ITransactionalMessageBus>();
+            var transactionCapability = sp.GetRequiredService<MongoTransactionCapability>();
+
+            return Activator.CreateInstance(
+                handlerType,
+                sm,
+                repo,
+                bus,
+                partitioner,
+                historyWriter,
+                options,
+                mongoClient,
+                transactionalBus,
+                transactionCapability,
+                logger)!;
         });
 
         services.AddScoped(handlerType, sp => sp.GetRequiredService(handlerInterface));
