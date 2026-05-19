@@ -71,6 +71,30 @@ builder.Services.AddMongoBusSaga<OrderFulfillmentStateMachine, OrderFulfillmentS
     opt.DefaultPartitionCount = 8;
 });
 
+// 8. Multi-event saga: one external API call per state transition.
+//    See MultiEventSagaWorkflow.cs and the "Choosing checkpoint granularity"
+//    section of the root README for the motivation.
+builder.Services.AddSingleton<MongoBus.Sample.MultiEventSaga.FakeMetaClient>();
+builder.Services.AddMongoBusConsumer<
+    MongoBus.Sample.MultiEventSaga.UploadMediaWorker,
+    MongoBus.Sample.MultiEventSaga.StartMediaUpload,
+    MongoBus.Sample.MultiEventSaga.StartMediaUploadDefinition>();
+builder.Services.AddMongoBusConsumer<
+    MongoBus.Sample.MultiEventSaga.AttachMetadataWorker,
+    MongoBus.Sample.MultiEventSaga.StartMetadataAttach,
+    MongoBus.Sample.MultiEventSaga.StartMetadataAttachDefinition>();
+builder.Services.AddMongoBusConsumer<
+    MongoBus.Sample.MultiEventSaga.PublishMediaWorker,
+    MongoBus.Sample.MultiEventSaga.StartMediaPublish,
+    MongoBus.Sample.MultiEventSaga.StartMediaPublishDefinition>();
+builder.Services.AddMongoBusSaga<
+    MongoBus.Sample.MultiEventSaga.MetaPublishStateMachine,
+    MongoBus.Sample.MultiEventSaga.MetaPublishSagaState>(opt =>
+{
+    opt.HistoryEnabled = true;
+    opt.IdempotencyEnabled = true;  // dedupe result events by CloudEvent id
+});
+
 var app = builder.Build();
 
 // 4. Map Dashboard
@@ -275,6 +299,22 @@ await bus.PublishAsync("fulfill.order.placed", new FulfillOrderPlaced
     OrderId = "FULFILL-004", Amount = 1250.00m, CustomerEmail = "highvalue@example.com"
 }, correlationId: highValueId);
 logger.LogInformation("Fulfillment: High-value order placed for {Id} ($1,250)", highValueId);
+
+// --- Multi-event saga demo: external orchestration with per-step durability ---
+// Each external call is its own consumer + its own saga transition, so a
+// crash between calls resumes at the next step rather than re-running the
+// whole chain. The FakeMetaClient fails the first attempt of every operation
+// to prove the retry path is safe end-to-end.
+logger.LogInformation("=== Multi-event Meta publish saga ===");
+var metaId = Guid.NewGuid().ToString("N");
+await bus.PublishAsync(
+    "meta.publish.requested",
+    new MongoBus.Sample.MultiEventSaga.PublishToMetaRequested(
+        PostId: "POST-001",
+        MediaUrl: "https://cdn.example.com/media/raccoon.jpg",
+        Caption: "good evening"),
+    correlationId: metaId);
+logger.LogInformation("MultiEventSaga: Published initial request for {Id}", metaId);
 
 logger.LogInformation("Messages published. Waiting for processing... (Press Ctrl+C to exit)");
 

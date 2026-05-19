@@ -12,6 +12,7 @@ This sample demonstrates MongoBus features end-to-end:
 - Interceptors (publish/consume/batch)
 - Observers (publish/consume/batch) with default OpenTelemetry metrics
 - Dashboard
+- **Multi-event saga workflow** (`MultiEventSagaWorkflow.cs`): durable per-step external orchestration. Demonstrates how to model a 3-step external API workflow as one state per call, with a stubbed external client that fails on first attempt to exercise the retry path. See the "Checkpoint Granularity & Mid-Flight Failures" section of the root README for the motivation.
 
 ## Run
 

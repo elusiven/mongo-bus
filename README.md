@@ -507,6 +507,86 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `DefaultPartitionCount` | 0 (disabled) | Hash-based partition locking for concurrent access |
 | `RetryMode` | DenyList | `DenyList` (retry all except listed) or `AllowList` (retry only listed) |
 
+#### Checkpoint Granularity & Mid-Flight Failures
+
+A saga event handler persists state **once**, at the end of the entire activity chain. Every `Then` / `ThenAsync` / `Publish` / `Send` in a `When(...)` clause runs, and only then does the runtime increment `Version` and call `UpdateAsync` on the saga instance. Two consequences follow.
+
+**1. Intermediate writes to the saga instance are not durable until the chain finishes.** If the process crashes between activities, every mutation made to `ctx.Saga.*` during that handler is rolled back and the message redelivers. On the next attempt, the chain re-runs from activity #1.
+
+**2. `Publish` / `Send` activities fire mid-chain, before the saga write commits.** If the post-chain `UpdateAsync` then fails (Mongo blip, concurrency conflict), the outbound publishes have already escaped. On retry, they fire again.
+
+For pure state mutations and idempotent downstream consumers this is fine. It becomes load-bearing when a single saga event handler orchestrates **multiple non-idempotent external calls** — uploading media to Meta, charging a card, provisioning a VM. A mid-handler crash re-runs every external call from the start, and the external system has no way to know it's seen the request before.
+
+##### Pattern: one external call per state transition
+
+The fix is to split the workflow so each external call is its own *event* with its own saga state. A worker (a regular `IMessageHandler<T>`) performs the external call and publishes a result event; the saga transitions on the result. Each transition is its own durable checkpoint.
+
+Concretely, a 3-step Meta publish becomes four states (`UploadingMedia` → `AttachingMetadata` → `Publishing` → `Completed`) and three workers. A crash between steps 2 and 3 resumes at step 3 — step 1 and step 2 are not re-attempted.
+
+```csharp
+public class MetaPublishStateMachine : MongoBusStateMachine<MetaPublishSagaState>
+{
+    public SagaState UploadingMedia { get; private set; }
+    public SagaState AttachingMetadata { get; private set; }
+    public SagaState Publishing { get; private set; }
+    public SagaState Completed { get; private set; }
+
+    // ...event declarations...
+
+    public MetaPublishStateMachine()
+    {
+        Initially(
+            When(Requested)
+                .Then(ctx => { ctx.Saga.MediaUrl = ctx.Message.MediaUrl; /* ... */ })
+                .Publish("meta.upload.start", ctx => new StartMediaUpload(/* ... */))
+                .TransitionTo(UploadingMedia));
+
+        During(UploadingMedia,
+            When(Uploaded)
+                .Then(ctx => ctx.Saga.ContainerId = ctx.Message.ContainerId)
+                .Publish("meta.metadata.start", ctx => /* next step */)
+                .TransitionTo(AttachingMetadata));
+
+        // ...etc...
+    }
+}
+```
+
+The workers are conventional consumers:
+
+```csharp
+public sealed class UploadMediaWorker(FakeMetaClient meta, IMessageBus bus)
+    : IMessageHandler<StartMediaUpload>
+{
+    public async Task HandleAsync(StartMediaUpload msg, ConsumeContext ctx, CancellationToken ct)
+    {
+        // Stable idempotency token so the external API can dedupe on its side
+        // if this worker retries after a partial failure.
+        var key = $"{ctx.CorrelationId}:upload";
+        var containerId = await meta.UploadAsync(key, msg.MediaUrl);
+
+        await bus.PublishAsync("meta.media.uploaded",
+            new MediaUploaded(containerId),
+            correlationId: ctx.CorrelationId,
+            causationId: ctx.CloudEventId,
+            ct: ct);
+    }
+}
+```
+
+A runnable end-to-end version of this pattern — including a fake external client that fails on first attempt to exercise the retry path — lives in `samples/MongoBus.Sample/MultiEventSagaWorkflow.cs`.
+
+##### When to use which
+
+| Situation | Pattern |
+|-----------|---------|
+| Pure state mutations, no external side effects | Single-event saga, activities chained in one `When(...)` |
+| Idempotent downstream consumers, no external HTTP calls | Single-event saga is fine |
+| Multiple non-idempotent external API calls in sequence | Multi-event saga (one state per external call) |
+| External API supports idempotency keys | Multi-event saga **plus** pass `{CorrelationId}:{step}` as the idempotency key |
+
+Enabling `IdempotencyEnabled = true` on the saga options dedupes redelivered result events by CloudEvent id, which is recommended for the multi-event pattern.
+
 #### Saga Dashboard
 
 The monitoring dashboard includes a **Sagas** tab with:
