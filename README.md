@@ -506,6 +506,112 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `SagaInstanceTtl` | disabled | TTL index on saga instances for auto-cleanup |
 | `DefaultPartitionCount` | 0 (disabled) | Hash-based partition locking for concurrent access |
 | `RetryMode` | DenyList | `DenyList` (retry all except listed) or `AllowList` (retry only listed) |
+| `UseOutbox` | false | Buffer saga publishes and write them with the saga state inside one Mongo transaction. Requires a replica set / sharded cluster and `MongoBusOptions.Outbox.Enabled = true`. See "Checkpoint Granularity & Mid-Flight Failures" below. |
+| `AllowFallbackWhenTransactionsUnsupported` | false | When `UseOutbox = true` but the connected deployment doesn't support transactions, fall back to direct publish (with a warning) instead of throwing. Use for dev/test against standalone Mongo. |
+
+#### Checkpoint Granularity & Mid-Flight Failures
+
+A saga event handler persists state **once**, at the end of the entire activity chain. Every `Then` / `ThenAsync` / `Publish` / `Send` in a `When(...)` clause runs, and only then does the runtime increment `Version` and call `UpdateAsync` on the saga instance. Two consequences follow.
+
+**1. Intermediate writes to the saga instance are not durable until the chain finishes.** If the process crashes between activities, every mutation made to `ctx.Saga.*` during that handler is rolled back and the message redelivers. On the next attempt, the chain re-runs from activity #1.
+
+**2. `Publish` / `Send` activities fire mid-chain, before the saga write commits.** If the post-chain `UpdateAsync` then fails (Mongo blip, concurrency conflict), the outbound publishes have already escaped. On retry, they fire again.
+
+For pure state mutations and idempotent downstream consumers this is fine. It becomes load-bearing when a single saga event handler orchestrates **multiple non-idempotent external calls** — uploading media to Meta, charging a card, provisioning a VM. A mid-handler crash re-runs every external call from the start, and the external system has no way to know it's seen the request before.
+
+##### Pattern: one external call per state transition
+
+The fix is to split the workflow so each external call is its own *event* with its own saga state. A worker (a regular `IMessageHandler<T>`) performs the external call and publishes a result event; the saga transitions on the result. Each transition is its own durable checkpoint.
+
+Concretely, a 3-step Meta publish becomes four states (`UploadingMedia` → `AttachingMetadata` → `Publishing` → `Completed`) and three workers. A crash between steps 2 and 3 resumes at step 3 — step 1 and step 2 are not re-attempted.
+
+```csharp
+public class MetaPublishStateMachine : MongoBusStateMachine<MetaPublishSagaState>
+{
+    public SagaState UploadingMedia { get; private set; }
+    public SagaState AttachingMetadata { get; private set; }
+    public SagaState Publishing { get; private set; }
+    public SagaState Completed { get; private set; }
+
+    // ...event declarations...
+
+    public MetaPublishStateMachine()
+    {
+        Initially(
+            When(Requested)
+                .Then(ctx => { ctx.Saga.MediaUrl = ctx.Message.MediaUrl; /* ... */ })
+                .Publish("meta.upload.start", ctx => new StartMediaUpload(/* ... */))
+                .TransitionTo(UploadingMedia));
+
+        During(UploadingMedia,
+            When(Uploaded)
+                .Then(ctx => ctx.Saga.ContainerId = ctx.Message.ContainerId)
+                .Publish("meta.metadata.start", ctx => /* next step */)
+                .TransitionTo(AttachingMetadata));
+
+        // ...etc...
+    }
+}
+```
+
+The workers are conventional consumers:
+
+```csharp
+public sealed class UploadMediaWorker(FakeMetaClient meta, IMessageBus bus)
+    : IMessageHandler<StartMediaUpload>
+{
+    public async Task HandleAsync(StartMediaUpload msg, ConsumeContext ctx, CancellationToken ct)
+    {
+        // Stable idempotency token so the external API can dedupe on its side
+        // if this worker retries after a partial failure.
+        var key = $"{ctx.CorrelationId}:upload";
+        var containerId = await meta.UploadAsync(key, msg.MediaUrl);
+
+        await bus.PublishAsync("meta.media.uploaded",
+            new MediaUploaded(containerId),
+            correlationId: ctx.CorrelationId,
+            causationId: ctx.CloudEventId,
+            ct: ct);
+    }
+}
+```
+
+A runnable end-to-end version of this pattern — including a fake external client that fails on first attempt to exercise the retry path — lives in `samples/MongoBus.Sample/MultiEventSagaWorkflow.cs`.
+
+##### When to use which
+
+| Situation | Pattern |
+|-----------|---------|
+| Pure state mutations, no external side effects | Single-event saga, activities chained in one `When(...)` |
+| Idempotent downstream consumers, no external HTTP calls | Single-event saga is fine |
+| Multiple non-idempotent external API calls in sequence | Multi-event saga (one state per external call) |
+| External API supports idempotency keys | Multi-event saga **plus** pass `{CorrelationId}:{step}` as the idempotency key |
+
+Enabling `IdempotencyEnabled = true` on the saga options dedupes redelivered result events by CloudEvent id, which is recommended for the multi-event pattern.
+
+##### Transactional saga publishes (`UseOutbox`)
+
+Even without restructuring as a multi-event saga, you can close the *publish-leak* part of the problem — the case where a saga's `.Publish` / `.Send` activity fires successfully but the subsequent saga write fails, leaving an outbound message that doesn't match the saved saga state.
+
+Set `SagaOptions.UseOutbox = true` (and `MongoBusOptions.Outbox.Enabled = true`). The runtime then:
+
+1. Buffers every saga publish during the activity chain instead of sending it directly.
+2. Opens a Mongo session and starts a transaction.
+3. Writes the saga state, the history entry (if `HistoryEnabled = true`), and one outbox row per buffered publish — all inside the transaction.
+4. Commits. The `MongoOutboxRelayService` picks the rows up afterwards and forwards them to the inbox.
+
+If the commit aborts (concurrency conflict, transient Mongo error, anything else), no outbox rows survive and no publishes escape — the inbox redelivers the message and the next attempt starts from a known-clean state.
+
+```csharp
+builder.Services.AddMongoBusSaga<MetaPublishStateMachine, MetaPublishSagaState>(opt =>
+{
+    opt.UseOutbox = true;
+});
+```
+
+Requires MongoDB with multi-document transaction support — a replica set or sharded cluster. On a standalone Mongo, the saga handler throws an explicit error on first use. For dev/test against standalone, set `AllowFallbackWhenTransactionsUnsupported = true` and the runtime falls back to direct publish with a one-time warning.
+
+`UseOutbox` solves the publish-leak problem, but **not** the duplicate-external-call problem from non-idempotent HTTP APIs called from within the activity chain — those still need the multi-event pattern above (or external idempotency tokens). Use both together for workflows that orchestrate multiple non-idempotent external calls.
 
 #### Saga Dashboard
 

@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.Abstractions.Saga;
+using MongoBus.DependencyInjection;
 using MongoBus.Models;
 using MongoBus.Models.Saga;
+using MongoDB.Driver;
 
 namespace MongoBus.Internal.Saga;
 
@@ -12,10 +14,16 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
     IMessageBus bus,
     SagaPartitioner? partitioner,
     SagaHistoryWriter<TInstance>? historyWriter,
+    SagaOptions options,
+    IMongoClient? mongoClient,
+    ITransactionalMessageBus? transactionalBus,
+    MongoTransactionCapability? transactionCapability,
     ILogger logger)
     : IMessageHandler<TMessage>
     where TInstance : class, ISagaInstance, new()
 {
+    private static int _fallbackWarningLogged;
+
     public async Task HandleAsync(TMessage message, ConsumeContext context, CancellationToken ct)
     {
         var registration = stateMachine.GetEventRegistrations()[GetTypeId(context)];
@@ -107,9 +115,31 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             return;
         }
 
-        // Execute behavior chain
+        var useTransactional = options.UseOutbox
+            && await ShouldUseTransactionalPathAsync(ct);
+
+        if (useTransactional)
+        {
+            await ProcessTransactionalAsync(message, context, correlationId, instance, behavior, isNew, ct);
+        }
+        else
+        {
+            await ProcessDirectAsync(message, context, correlationId, instance, behavior, isNew, bus, ct);
+        }
+    }
+
+    private async Task ProcessDirectAsync(
+        TMessage message,
+        ConsumeContext context,
+        string correlationId,
+        TInstance instance,
+        IReadOnlyList<ISagaActivity<TInstance, TMessage>> behavior,
+        bool isNew,
+        IMessageBus activityBus,
+        CancellationToken ct)
+    {
         var sagaContext = new SagaConsumeContext<TInstance, TMessage>(
-            instance, message, context, bus, ct);
+            instance, message, context, activityBus, ct);
 
         var previousVersion = instance.Version;
         var previousState = instance.CurrentState;
@@ -118,7 +148,93 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         foreach (var activity in behavior)
             await activity.ExecuteAsync(sagaContext);
 
-        // Check composite events
+        await ApplyCompositeEventsAsync(instance, context, activityBus, ct);
+
+        instance.Version++;
+        if (isNew)
+            await repository.InsertAsync(instance, ct);
+        else
+            await repository.UpdateAsync(instance, previousVersion, ct);
+
+        if (historyWriter != null)
+        {
+            await historyWriter.WriteAsync(
+                correlationId, previousState, instance.CurrentState,
+                GetTypeId(context), context, instance.Version, ct);
+        }
+
+        if (stateMachine.IsCompleted(instance))
+        {
+            logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
+            await repository.DeleteAsync(correlationId, ct);
+        }
+    }
+
+    private async Task ProcessTransactionalAsync(
+        TMessage message,
+        ConsumeContext context,
+        string correlationId,
+        TInstance instance,
+        IReadOnlyList<ISagaActivity<TInstance, TMessage>> behavior,
+        bool isNew,
+        CancellationToken ct)
+    {
+        // mongoClient and transactionalBus are non-null when useTransactional is true
+        // (verified at registration: UseOutbox requires both to be available).
+        var buffered = new BufferedSagaMessageBus();
+        var sagaContext = new SagaConsumeContext<TInstance, TMessage>(
+            instance, message, context, buffered, ct);
+
+        var previousVersion = instance.Version;
+        var previousState = instance.CurrentState;
+        instance.LastModifiedUtc = DateTime.UtcNow;
+
+        foreach (var activity in behavior)
+            await activity.ExecuteAsync(sagaContext);
+
+        await ApplyCompositeEventsAsync(instance, context, buffered, ct);
+
+        instance.Version++;
+
+        using var session = await mongoClient!.StartSessionAsync(cancellationToken: ct);
+        session.StartTransaction();
+        try
+        {
+            if (isNew)
+                await repository.InsertAsync(instance, session, ct);
+            else
+                await repository.UpdateAsync(instance, previousVersion, session, ct);
+
+            if (historyWriter != null)
+            {
+                await historyWriter.WriteAsync(
+                    correlationId, previousState, instance.CurrentState,
+                    GetTypeId(context), context, instance.Version, session, ct);
+            }
+
+            if (stateMachine.IsCompleted(instance))
+            {
+                logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
+                await repository.DeleteAsync(correlationId, session, ct);
+            }
+
+            await buffered.FlushAsync(transactionalBus!, session, ct);
+
+            await session.CommitTransactionAsync(ct);
+        }
+        catch
+        {
+            await session.AbortTransactionAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task ApplyCompositeEventsAsync(
+        TInstance instance,
+        ConsumeContext context,
+        IMessageBus activityBus,
+        CancellationToken ct)
+    {
         var typeId = GetTypeId(context);
         foreach (var composite in stateMachine.GetCompositeEvents())
         {
@@ -139,33 +255,46 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
                 {
                     logger.LogDebug(
                         "Composite event '{EventName}' satisfied for saga {CorrelationId}",
-                        composite.EventName, correlationId);
-                    await compositeBehavior(instance, bus, context, ct);
+                        composite.EventName, instance.CorrelationId);
+                    await compositeBehavior(instance, activityBus, context, ct);
                 }
             }
         }
+    }
 
-        // Persist
-        instance.Version++;
-        if (isNew)
-            await repository.InsertAsync(instance, ct);
-        else
-            await repository.UpdateAsync(instance, previousVersion, ct);
-
-        // Write history entry
-        if (historyWriter != null)
+    private async Task<bool> ShouldUseTransactionalPathAsync(CancellationToken ct)
+    {
+        if (mongoClient is null || transactionalBus is null || transactionCapability is null)
         {
-            await historyWriter.WriteAsync(
-                correlationId, previousState, instance.CurrentState,
-                GetTypeId(context), context, instance.Version, ct);
+            // Misconfigured: UseOutbox=true but DI didn't wire the transactional pieces.
+            // Throw a clear, non-retryable error so it surfaces in tests and on first run.
+            throw new InvalidOperationException(
+                "SagaOptions.UseOutbox is enabled but the transactional message bus is not " +
+                "registered. Ensure MongoBusOptions.Outbox.Enabled = true on AddMongoBus().");
         }
 
-        // Auto-purge if completed
-        if (stateMachine.IsCompleted(instance))
+        var supported = await transactionCapability.IsSupportedAsync(ct);
+        if (supported)
+            return true;
+
+        if (options.AllowFallbackWhenTransactionsUnsupported)
         {
-            logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
-            await repository.DeleteAsync(correlationId, ct);
+            if (Interlocked.Exchange(ref _fallbackWarningLogged, 1) == 0)
+            {
+                logger.LogWarning(
+                    "SagaOptions.UseOutbox is enabled but the connected MongoDB deployment " +
+                    "does not support transactions. Falling back to direct publish — saga " +
+                    "publishes will not be atomic with the saga write. This warning is " +
+                    "logged once per saga type.");
+            }
+            return false;
         }
+
+        throw new InvalidOperationException(
+            "SagaOptions.UseOutbox is enabled but the connected MongoDB deployment does not " +
+            "support transactions (requires a replica set or sharded cluster). Set " +
+            "SagaOptions.AllowFallbackWhenTransactionsUnsupported = true to degrade gracefully " +
+            "in development environments.");
     }
 
     private static string ResolveCorrelationId(SagaEventRegistration registration, ConsumeContext context)
