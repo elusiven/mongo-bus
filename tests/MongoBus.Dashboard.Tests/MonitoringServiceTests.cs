@@ -106,6 +106,56 @@ public class MonitoringServiceTests(MongoDbFixture fixture)
         stats.ByState.Single(s => s.State == "Completed").Count.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData("bus_inbox")]
+    [InlineData("bus_outbox")]
+    [InlineData("bus_bindings")]
+    [InlineData("system.indexes")]
+    [InlineData("")]
+    public async Task GetSagaStatsAsync_ShouldReject_NonSagaCollection(string collectionName)
+    {
+        var client = new MongoClient(fixture.ConnectionString);
+        var dbName = "saga_guard_stats_" + Guid.NewGuid().ToString("N");
+        var db = client.GetDatabase(dbName);
+        var service = new MongoBusMonitoringService(db);
+
+        var act = () => service.GetSagaStatsAsync(collectionName);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("bus_inbox")]
+    [InlineData("bus_outbox")]
+    [InlineData("bus_bindings")]
+    public async Task GetSagaInstancesAsync_ShouldReject_NonSagaCollection(string collectionName)
+    {
+        var client = new MongoClient(fixture.ConnectionString);
+        var dbName = "saga_guard_instances_" + Guid.NewGuid().ToString("N");
+        var db = client.GetDatabase(dbName);
+        var service = new MongoBusMonitoringService(db);
+
+        var act = () => service.GetSagaInstancesAsync(collectionName, null, 0, 50);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("bus_inbox")]
+    [InlineData("bus_saga_order-state")]
+    [InlineData("")]
+    public async Task GetSagaHistoryAsync_ShouldReject_NonHistoryCollection(string collectionName)
+    {
+        var client = new MongoClient(fixture.ConnectionString);
+        var dbName = "saga_guard_history_" + Guid.NewGuid().ToString("N");
+        var db = client.GetDatabase(dbName);
+        var service = new MongoBusMonitoringService(db);
+
+        var act = () => service.GetSagaHistoryAsync(collectionName, "any-correlation-id");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
     [Fact]
     public async Task GetSagaHistoryAsync_ShouldReturnEntriesForCorrelationId()
     {
