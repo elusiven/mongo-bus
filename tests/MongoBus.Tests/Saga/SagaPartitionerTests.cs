@@ -30,6 +30,19 @@ public class SagaPartitionerTests
         order.Should().Equal(new[] { 1, 2 }, "second acquire should block until first lock is released");
     }
 
+    [Theory]
+    [InlineData(int.MinValue, 4)]
+    [InlineData(int.MaxValue, 4)]
+    [InlineData(-1, 4)]
+    [InlineData(0, 4)]
+    [InlineData(int.MinValue, 1)]
+    public void GetPartitionIndex_ReturnsValidIndex_ForAnyHashCode(int hashCode, int partitionCount)
+    {
+        var index = SagaPartitioner.GetPartitionIndex(hashCode, partitionCount);
+
+        index.Should().BeInRange(0, partitionCount - 1);
+    }
+
     [Fact]
     public async Task AcquireAsync_DifferentKeys_CanRunConcurrently()
     {

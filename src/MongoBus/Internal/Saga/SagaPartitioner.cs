@@ -18,10 +18,15 @@ internal sealed class SagaPartitioner
 
     public async Task<IDisposable> AcquireAsync(string key, CancellationToken ct)
     {
-        var index = Math.Abs(key.GetHashCode()) % _partitions.Length;
+        var index = GetPartitionIndex(key.GetHashCode(), _partitions.Length);
         await _partitions[index].WaitAsync(ct);
         return new PartitionLock(_partitions[index]);
     }
+
+    // Mask off the sign bit instead of Math.Abs: Math.Abs(int.MinValue) throws
+    // OverflowException, and GetHashCode can legitimately return int.MinValue.
+    internal static int GetPartitionIndex(int hashCode, int partitionCount) =>
+        (hashCode & int.MaxValue) % partitionCount;
 
     private sealed class PartitionLock(SemaphoreSlim semaphore) : IDisposable
     {
