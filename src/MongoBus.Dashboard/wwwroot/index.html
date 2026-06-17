@@ -187,6 +187,19 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    // Escape untrusted values before interpolating into HTML. Message metadata and
+    // saga state come from external (possibly foreign-language) publishers and must
+    // never be trusted as markup.
+    function escapeHtml(value) {
+        if (value === null || value === undefined) return '';
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     // --- Messages Tab ---
     async function updateStats() {
         try {
@@ -200,7 +213,7 @@
             const endpointBody = document.getElementById('endpoint-stats');
             endpointBody.innerHTML = '';
             data.endpoints.forEach(e => {
-                const row = `<tr><td>${e.endpointId}</td><td>${e.pending}</td><td>${e.processed}</td><td>${e.dead}</td></tr>`;
+                const row = `<tr><td>${escapeHtml(e.endpointId)}</td><td>${e.pending}</td><td>${e.processed}</td><td>${e.dead}</td></tr>`;
                 endpointBody.innerHTML += row;
             });
 
@@ -209,9 +222,9 @@
             data.recentFailures.forEach(f => {
                 const row = `<tr>
                     <td>${new Date(f.timestamp).toLocaleString()}</td>
-                    <td>${f.endpointId}</td>
-                    <td>${f.typeId}</td>
-                    <td><small>${f.error}</small></td>
+                    <td>${escapeHtml(f.endpointId)}</td>
+                    <td>${escapeHtml(f.typeId)}</td>
+                    <td><small>${escapeHtml(f.error)}</small></td>
                 </tr>`;
                 failureBody.innerHTML += row;
             });
@@ -299,7 +312,7 @@
 
             stats.byState.forEach(s => {
                 const color = stateColors[s.state] || 'primary';
-                badgesEl.innerHTML += `<span class="badge bg-${color} saga-state-badge">${s.state}: ${s.count}</span>`;
+                badgesEl.innerHTML += `<span class="badge bg-${color} saga-state-badge">${escapeHtml(s.state)}: ${s.count}</span>`;
                 const opt = document.createElement('option');
                 opt.value = s.state;
                 opt.textContent = `${s.state} (${s.count})`;
@@ -338,12 +351,17 @@
 
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td><span class="saga-link" onclick="showHistory('${corrId}')">${corrId}</span></td>
-                    <td><span class="badge bg-${getStateColor(state)}">${state}</span></td>
-                    <td>${version}</td>
+                    <td></td>
+                    <td><span class="badge bg-${getStateColor(state)}">${escapeHtml(state)}</span></td>
+                    <td>${escapeHtml(version)}</td>
                     <td>${created ? new Date(created).toLocaleString() : '-'}</td>
                     <td>${modified ? new Date(modified).toLocaleString() : '-'}</td>
                 `;
+                const link = document.createElement('span');
+                link.className = 'saga-link';
+                link.textContent = corrId;
+                link.onclick = () => showHistory(corrId);
+                row.firstElementChild.appendChild(link);
                 tbody.appendChild(row);
             });
 
@@ -385,11 +403,11 @@
                 row.className = 'saga-history-row';
                 row.innerHTML = `
                     <td>${new Date(e.timestampUtc).toLocaleString()}</td>
-                    <td><span class="badge bg-${getStateColor(e.previousState)}">${e.previousState}</span></td>
+                    <td><span class="badge bg-${getStateColor(e.previousState)}">${escapeHtml(e.previousState)}</span></td>
                     <td>&rarr;</td>
-                    <td><span class="badge bg-${getStateColor(e.newState)}">${e.newState}</span></td>
-                    <td><code>${e.eventTypeId}</code></td>
-                    <td>${e.versionAfter}</td>
+                    <td><span class="badge bg-${getStateColor(e.newState)}">${escapeHtml(e.newState)}</span></td>
+                    <td><code>${escapeHtml(e.eventTypeId)}</code></td>
+                    <td>${escapeHtml(e.versionAfter)}</td>
                 `;
                 tbody.appendChild(row);
             });
