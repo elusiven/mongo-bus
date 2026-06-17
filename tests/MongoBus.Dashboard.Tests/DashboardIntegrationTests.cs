@@ -214,6 +214,26 @@ public class DashboardIntegrationTests(MongoDbFixture fixture)
     }
 
     [Fact]
+    public void MapMongoBusDashboard_Throws_WhenAddMongoBusDashboardNotCalled()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddRouting();
+        builder.Services.AddMongoBus(opt => {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = "dashboard_missing_registration_test";
+        });
+        // NOTE: AddMongoBusDashboard() intentionally not called.
+
+        var app = builder.Build();
+        app.UseRouting();
+
+        var act = () => app.MapMongoBusDashboard();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*AddMongoBusDashboard*");
+    }
+
+    [Fact]
     public async Task Dashboard_NullPolicy_DashboardIsOpen()
     {
         var builder = WebApplication.CreateBuilder();
