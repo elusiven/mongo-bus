@@ -175,7 +175,7 @@ internal sealed class MongoOutboxRelayService : BackgroundService
                 Builders<OutboxMessage>.Update
                     .Set(x => x.Status, OutboxStatus.Dead)
                     .Set(x => x.Attempt, nextAttempt)
-                    .Set(x => x.LastError, ex.ToString())
+                    .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
                     .Set(x => x.LockOwner, null)
                     .Set(x => x.LockedUntilUtc, null),
                 cancellationToken: ct);
@@ -189,7 +189,7 @@ internal sealed class MongoOutboxRelayService : BackgroundService
                 .Set(x => x.Status, OutboxStatus.Pending)
                 .Set(x => x.Attempt, nextAttempt)
                 .Set(x => x.VisibleUtc, DateTime.UtcNow.Add(delay))
-                .Set(x => x.LastError, ex.Message)
+                .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
                 .Set(x => x.LockOwner, null)
                 .Set(x => x.LockedUntilUtc, null),
             cancellationToken: ct);
