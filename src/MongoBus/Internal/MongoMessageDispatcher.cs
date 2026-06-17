@@ -213,7 +213,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
                 Builders<InboxMessage>.Update
                     .Set(x => x.Status, InboxStatus.Dead)
                     .Set(x => x.Attempt, nextAttempt)
-                    .Set(x => x.LastError, ex.ToString())
+                    .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
                     .Set(x => x.LockOwner, null)
                     .Set(x => x.LockedUntilUtc, null),
                 cancellationToken: ct);
@@ -226,7 +226,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
             Builders<InboxMessage>.Update
                 .Set(x => x.Attempt, nextAttempt)
                 .Set(x => x.VisibleUtc, DateTime.UtcNow.Add(delay))
-                .Set(x => x.LastError, ex.Message)
+                .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
                 .Set(x => x.Status, InboxStatus.Pending)
                 .Set(x => x.LockOwner, null)
                 .Set(x => x.LockedUntilUtc, null),

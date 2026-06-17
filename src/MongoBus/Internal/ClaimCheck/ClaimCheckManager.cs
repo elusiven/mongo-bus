@@ -73,7 +73,8 @@ internal sealed class ClaimCheckManager(
         if (reference.Metadata != null && reference.Metadata.TryGetValue(ClaimCheckConstants.CompressionMetadataKey, out var algorithm))
         {
             var compressor = compressorProvider.GetCompressor(algorithm);
-            stream = await compressor.DecompressAsync(stream, ct);
+            var decompressed = await compressor.DecompressAsync(stream, ct);
+            stream = new LimitedReadStream(decompressed, options.ClaimCheck.Compression.MaxDecompressedBytes);
         }
 
         if (typeof(Stream).IsAssignableFrom(messageType))

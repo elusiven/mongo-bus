@@ -177,7 +177,9 @@ public sealed class MongoMessageBus(
         if (!claimCheckDecision.IsClaimCheck)
         {
             var envelope = enveloper.CreateEnvelope(publishContext);
-            return (serializer.Serialize(envelope), envelope.Id);
+            var payload = serializer.Serialize(envelope);
+            EnsureWithinMaxSize(publishContext.TypeId, payload);
+            return (payload, envelope.Id);
         }
 
         var claimContext = new PublishContext<ClaimCheckReference>(
@@ -197,6 +199,15 @@ public sealed class MongoMessageBus(
 
         var claimEnvelope = enveloper.CreateEnvelope(claimContext);
         return (serializer.Serialize(claimEnvelope), claimEnvelope.Id);
+    }
+
+    private void EnsureWithinMaxSize(string typeId, string payload)
+    {
+        var size = System.Text.Encoding.UTF8.GetByteCount(payload);
+        if (size > options.MaxMessageSizeBytes)
+            throw new InvalidOperationException(
+                $"Message '{typeId}' serialized to {size} bytes, exceeding the configured maximum " +
+                $"size of {options.MaxMessageSizeBytes} bytes. Enable claim-check to offload large payloads.");
     }
 
     private static async Task InvokeWithInterceptorsAsync<T>(

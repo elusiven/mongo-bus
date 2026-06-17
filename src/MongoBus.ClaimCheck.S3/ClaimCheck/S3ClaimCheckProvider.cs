@@ -54,13 +54,16 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
 
     public async Task<Stream> OpenReadAsync(ClaimCheckReference reference, CancellationToken ct)
     {
-        var response = await _client.GetObjectAsync(reference.Container, reference.Key, ct);
+        // Always read from the configured bucket, never the bucket named in the
+        // (untrusted) reference, so a forged message cannot coerce reads from an
+        // arbitrary bucket the configured credentials can access.
+        var response = await _client.GetObjectAsync(_options.BucketName, reference.Key, ct);
         return new ResponseStream(response);
     }
 
     public async Task DeleteAsync(ClaimCheckReference reference, CancellationToken ct)
     {
-        await _client.DeleteObjectAsync(reference.Container, reference.Key, ct);
+        await _client.DeleteObjectAsync(_options.BucketName, reference.Key, ct);
     }
 
     public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)

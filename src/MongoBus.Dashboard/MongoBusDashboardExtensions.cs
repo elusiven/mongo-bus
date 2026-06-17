@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging;
 using MongoBus.Dashboard.Services;
 
 namespace MongoBus.Dashboard;
@@ -45,7 +46,22 @@ public static class MongoBusDashboardExtensions
     {
         pattern = pattern.TrimEnd('/');
 
-        var options = endpoints.ServiceProvider.GetService<MongoBusDashboardOptions>();
+        var options = endpoints.ServiceProvider.GetService<MongoBusDashboardOptions>()
+            ?? throw new InvalidOperationException(
+                "MongoBus dashboard services are not registered. Call AddMongoBusDashboard() on your " +
+                "service collection before calling MapMongoBusDashboard(). Mapping without registration " +
+                "would expose the dashboard without the default authorization policy.");
+
+        if (string.IsNullOrEmpty(options.AuthorizationPolicy))
+        {
+            var logger = endpoints.ServiceProvider
+                .GetService<ILoggerFactory>()?.CreateLogger("MongoBus.Dashboard");
+            logger?.LogWarning(
+                "The MongoBus dashboard is mapped without an authorization policy and is publicly " +
+                "accessible. It exposes message and saga data. Configure an AuthorizationPolicy for " +
+                "any non-development environment.");
+        }
+
         var assembly = typeof(MongoBusDashboardExtensions).Assembly;
         var fileProvider = new ManifestEmbeddedFileProvider(assembly, "wwwroot");
 

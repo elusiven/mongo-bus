@@ -20,6 +20,13 @@ public sealed class ClaimCheckCompressionOptions
 {
     public bool Enabled { get; set; }
     public string Algorithm { get; set; } = "gzip";
+
+    /// <summary>
+    /// Maximum number of bytes a compressed claim-check payload may expand to when
+    /// decompressed. Guards against decompression bombs from untrusted publishers.
+    /// Defaults to 100 MiB.
+    /// </summary>
+    public long MaxDecompressedBytes { get; set; } = 100L * 1024 * 1024;
 }
 
 public sealed class AzureBlobClaimCheckOptions

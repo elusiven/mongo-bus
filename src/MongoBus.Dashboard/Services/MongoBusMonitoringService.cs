@@ -95,6 +95,7 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
 
     public async Task<SagaDashboardStats> GetSagaStatsAsync(string collectionName, CancellationToken ct = default)
     {
+        EnsureSagaCollection(collectionName);
         var collection = db.GetCollection<BsonDocument>(collectionName);
         var total = await collection.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty, cancellationToken: ct);
 
@@ -125,6 +126,7 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
     public async Task<IReadOnlyList<BsonDocument>> GetSagaInstancesAsync(
         string collectionName, string? stateFilter, int skip, int take, CancellationToken ct = default)
     {
+        EnsureSagaCollection(collectionName);
         var collection = db.GetCollection<BsonDocument>(collectionName);
         var filter = string.IsNullOrEmpty(stateFilter)
             ? FilterDefinition<BsonDocument>.Empty
@@ -140,9 +142,33 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
     public async Task<IReadOnlyList<SagaHistoryEntry>> GetSagaHistoryAsync(
         string historyCollectionName, string correlationId, CancellationToken ct = default)
     {
+        EnsureSagaHistoryCollection(historyCollectionName);
         var collection = db.GetCollection<SagaHistoryEntry>(historyCollectionName);
         return await collection.Find(x => x.CorrelationId == correlationId)
             .SortBy(x => x.TimestampUtc)
             .ToListAsync(ct);
     }
+
+    // Collection names arrive from untrusted route parameters. Without this guard the
+    // dashboard could be coerced into reading any collection in the database (e.g.
+    // bus_inbox message payloads). Only saga collections owned by the bus are addressable.
+    private static void EnsureSagaCollection(string collectionName)
+    {
+        if (!IsValidSagaCollectionName(collectionName) ||
+            !collectionName.StartsWith(SagaCollectionPrefix, StringComparison.Ordinal))
+            throw new ArgumentException(
+                $"'{collectionName}' is not a valid saga collection name.", nameof(collectionName));
+    }
+
+    private static void EnsureSagaHistoryCollection(string collectionName)
+    {
+        if (!IsValidSagaCollectionName(collectionName) ||
+            !collectionName.StartsWith(SagaHistoryPrefix, StringComparison.Ordinal))
+            throw new ArgumentException(
+                $"'{collectionName}' is not a valid saga history collection name.", nameof(collectionName));
+    }
+
+    private static bool IsValidSagaCollectionName(string collectionName) =>
+        !string.IsNullOrEmpty(collectionName) &&
+        collectionName.IndexOfAny(['$', '\0']) < 0;
 }

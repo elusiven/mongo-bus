@@ -75,7 +75,8 @@ public class RetryTests(MongoDbFixture fixture)
             msg.Should().NotBeNull("Message should be marked as Dead");
             msg!.Attempt.Should().Be(2);
             msg.Status.Should().Be("Dead");
-            msg.LastError.Should().Contain("Boom!");
+            msg.LastError.Should().Be("Boom!", "the dashboard-visible error should be the exception message, not a full stack trace");
+            msg.LastError.Should().NotContain("   at ", "stack traces must not be persisted to/surfaced from the inbox");
             FailingHandler.Attempts.Should().Be(2);
         }
         finally
