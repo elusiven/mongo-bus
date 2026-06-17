@@ -73,7 +73,16 @@ public sealed class MongoBusIndexesHostedService : IHostedService
                 .Ascending(x => x.CreatedUtc),
             new CreateIndexOptions { ExpireAfter = _options.ProcessedMessageTtl });
 
-        return new[] { inboxIndex, inboxCreatedIndex };
+        // Supports the per-consumer idempotency check (MongoBusRuntime.TrySkipIdempotentAsync)
+        // and the outbox relay dedup query (MongoOutboxRelayService.BuildInboxMessagesAsync),
+        // both of which filter by EndpointId + CloudEventId. Without it those run as collection
+        // scans on every consumed/relayed message when idempotency is in play.
+        var inboxDedupIndex = new CreateIndexModel<InboxMessage>(
+            Builders<InboxMessage>.IndexKeys
+                .Ascending(x => x.EndpointId)
+                .Ascending(x => x.CloudEventId));
+
+        return new[] { inboxIndex, inboxCreatedIndex, inboxDedupIndex };
     }
 
     private static CreateIndexModel<Binding> BuildBindingIndex() =>

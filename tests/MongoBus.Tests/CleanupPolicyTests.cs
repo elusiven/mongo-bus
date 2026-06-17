@@ -54,4 +54,43 @@ public class CleanupPolicyTests(MongoDbFixture fixture)
             foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
         }
     }
+
+    [Fact]
+    public async Task Inbox_ShouldHave_CloudEventIdIndex_ForIdempotencyAndDedup()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        var dbName = "cloudevent_index_test_" + Guid.NewGuid().ToString("N");
+
+        services.AddMongoBus(opt =>
+        {
+            opt.ConnectionString = fixture.ConnectionString;
+            opt.DatabaseName = dbName;
+        });
+
+        var sp = services.BuildServiceProvider();
+        var db = sp.GetRequiredService<IMongoDatabase>();
+
+        var hostedServices = sp.GetServices<IHostedService>().ToList();
+        foreach (var hs in hostedServices) await hs.StartAsync(CancellationToken.None);
+
+        try
+        {
+            var inbox = db.GetCollection<InboxMessage>("bus_inbox");
+            var indexes = await (await inbox.Indexes.ListAsync()).ToListAsync();
+
+            var dedupIndex = indexes.FirstOrDefault(idx =>
+            {
+                var key = idx["key"].AsBsonDocument;
+                return key.Contains("EndpointId") && key.Contains("CloudEventId");
+            });
+
+            dedupIndex.Should().NotBeNull(
+                "an index on EndpointId + CloudEventId is required so the idempotency check and outbox dedup query are not full scans");
+        }
+        finally
+        {
+            foreach (var hs in hostedServices) await hs.StopAsync(CancellationToken.None);
+        }
+    }
 }
