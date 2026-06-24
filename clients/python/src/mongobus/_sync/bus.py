@@ -102,6 +102,9 @@ class MongoBus:
 
     def run(self, *, stop_event=None) -> None:
         while stop_event is None or not stop_event.is_set():
-            did_work = any(process_one(self._inbox, c) for c in self._consumers)
+            did_work = False
+            for consumer in self._consumers:
+                if process_one(self._inbox, consumer):
+                    did_work = True
             if not did_work:
                 time.sleep(constants.DEFAULT_POLL_SECONDS)

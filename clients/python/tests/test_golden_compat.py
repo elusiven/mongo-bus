@@ -26,6 +26,8 @@ def test_python_envelope_keys_match_dotnet_set():
         correlation_id="11112222333344445555666677778888",
     )
     assert set(env.keys()) == set(golden.keys())
+    assert env["time"].endswith("Z"), f"time must end with 'Z', got: {env['time']!r}"
+    assert "+00:00" not in env["time"], f"time must not contain '+00:00', got: {env['time']!r}"
 
 
 def test_inbox_document_field_set_matches_dotnet():

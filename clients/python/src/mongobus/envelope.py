@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .constants import SPEC_VERSION, CLAIM_CHECK_CONTENT_TYPE
 from .errors import ClaimCheckNotSupportedError
@@ -8,6 +8,12 @@ from .errors import ClaimCheckNotSupportedError
 
 def new_event_id() -> str:
     return uuid.uuid4().hex
+
+
+def _format_time(time_utc: datetime) -> str:
+    if time_utc.tzinfo is None:
+        raise ValueError("time_utc must be timezone-aware (UTC)")
+    return time_utc.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def build_envelope(
@@ -29,7 +35,7 @@ def build_envelope(
         "id": event_id,
         "type": type_id,
         "source": source,
-        "time": time_utc.isoformat(),
+        "time": _format_time(time_utc),
     }
     optional = {
         "subject": subject,

@@ -3,7 +3,7 @@
   "id": "9f86d081884c7d659a2feaa0c55ad015",
   "type": "OrderPlaced",
   "source": "urn:mongobus:unknown",
-  "time": "2026-06-24T12:00:00+00:00",
+  "time": "2026-06-24T12:00:00Z",
   "correlationId": "11112222333344445555666677778888",
   "data": {"orderId": "123", "total": 50}
 }

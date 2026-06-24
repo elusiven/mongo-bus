@@ -1,5 +1,7 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from mongobus import envelope
 
@@ -24,7 +26,7 @@ def test_build_envelope_uses_dotnet_key_spellings():
     assert env["type"] == "OrderPlaced"
     assert env["source"] == "urn:python:orders"
     assert env["data"] == {"orderId": "123"}
-    assert env["time"] == "2026-06-24T12:00:00+00:00"
+    assert env["time"] == "2026-06-24T12:00:00Z"
 
 
 def test_build_envelope_omits_null_keys():
@@ -74,9 +76,30 @@ def test_serialize_envelope_round_trips():
     assert json.loads(text)["data"]["orderId"] == "123"
 
 
-import pytest
-
 from mongobus.errors import ClaimCheckNotSupportedError
+
+
+def test_build_envelope_rejects_naive_datetime():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        envelope.build_envelope(
+            type_id="OrderPlaced",
+            data={},
+            source="s",
+            event_id="abc",
+            time_utc=datetime(2026, 6, 24, 12, 0, 0),  # naive — no tzinfo
+        )
+
+
+def test_build_envelope_normalizes_non_utc_timezone():
+    tz_plus2 = timezone(timedelta(hours=2))
+    env = envelope.build_envelope(
+        type_id="OrderPlaced",
+        data={},
+        source="s",
+        event_id="abc",
+        time_utc=datetime(2026, 6, 24, 14, 0, 0, tzinfo=tz_plus2),  # 14:00+02:00 == 12:00 UTC
+    )
+    assert env["time"] == "2026-06-24T12:00:00Z"
 
 
 def test_parse_envelope_reads_camelcase_keys():
