@@ -44,6 +44,36 @@ already provisions all of these.
 > TTL window in place. To change it, drop and recreate the `CreatedUtc` index. The .NET
 > service has the same limitation.
 
+## Claim check (large payloads)
+
+Offload large message `data` to external storage and carry only a reference in `bus_inbox`,
+wire-compatible with the .NET MongoBus claim-check format.
+
+```python
+from datetime import timedelta
+from mongobus import MongoBus, ClaimCheckConfig, GridFsClaimCheckProvider
+
+provider = GridFsClaimCheckProvider(db)                 # GridFS bucket "claimcheck"
+cc = ClaimCheckConfig(provider=provider, enabled=True,  # offload at/above threshold
+                      threshold_bytes=256 * 1024, compress=True)
+bus = MongoBus(uri="...", database="appdb", claim_check=cc)
+
+bus.publish("BigEvent", {"blob": "..."})                # offloaded if serialized >= threshold
+bus.publish("BigEvent", {"blob": "..."}, use_claim_check=True)  # force offload regardless of size
+```
+
+- **Storage backends:** `GridFsClaimCheckProvider` (built into MongoDB, no extra deps) and
+  `S3ClaimCheckProvider` (install `mongo-bus[s3]` for `boto3`). Async variants:
+  `AsyncGridFsClaimCheckProvider`, `mongobus.claimcheck.s3.AsyncS3ClaimCheckProvider`.
+- **Consuming:** a consumer with a `claim_check` provider transparently rehydrates the original
+  `data` before your handler runs. A consumer **without** a provider raises
+  `ClaimCheckNotSupportedError` on a claim-checked message.
+- **Compression:** `compress=True` gzip-compresses the blob (decompression is bounded by
+  `max_decompressed_bytes`, default 100 MiB).
+
+> **Cleanup is not automatic.** Offloaded blobs are not deleted when their `bus_inbox`
+> document expires. Run the .NET `ClaimCheckCleanupService`, or prune storage out of band.
+
 ## Idempotency default
 
 Consumers default to `idempotent=True`, which enables per-endpoint, effectively-once delivery by deduplicating on the CloudEvent `id` field. This **intentionally differs** from the .NET MongoBus default (`IdempotencyEnabled=false`, at-least-once). You can override this per consumer:
