@@ -2,8 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from .constants import SPEC_VERSION, CLAIM_CHECK_CONTENT_TYPE
-from .errors import ClaimCheckNotSupportedError
+from .constants import SPEC_VERSION
 
 
 def new_event_id() -> str:
@@ -57,9 +56,4 @@ def serialize_envelope(envelope: dict) -> str:
 
 
 def parse_envelope(payload_json: str) -> dict:
-    envelope = json.loads(payload_json)
-    if envelope.get("dataContentType") == CLAIM_CHECK_CONTENT_TYPE:
-        raise ClaimCheckNotSupportedError(
-            "Received a claim-check payload; the Python client does not support claim-check yet."
-        )
-    return envelope
+    return json.loads(payload_json)
