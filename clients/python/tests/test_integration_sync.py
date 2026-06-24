@@ -1,8 +1,10 @@
 import json
 import threading
+from datetime import timedelta
 
 import pytest
 from pymongo import MongoClient
+from pymongo.errors import OperationFailure
 from testcontainers.mongodb import MongoDbContainer
 
 from mongobus import MongoBus
@@ -262,3 +264,93 @@ def test_run_loop_sleeps_when_no_work_then_stops(mongo):
 
     client.drop_database(name)
     client.close()
+
+
+def _index_key_lists(info):
+    return [list(meta["key"]) for meta in info.values()]
+
+
+def _ttl_seconds(info):
+    return [meta["expireAfterSeconds"] for meta in info.values() if "expireAfterSeconds" in meta]
+
+
+def test_ensure_indexes_creates_inbox_and_binding_indexes(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    bus.ensure_indexes()
+
+    inbox = _index_key_lists(client[name]["bus_inbox"].index_information())
+    assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in inbox
+    assert [("EndpointId", 1), ("CloudEventId", 1)] in inbox
+    assert [("CreatedUtc", 1)] in inbox
+    assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
+
+    bindings = client[name]["bus_bindings"].index_information()
+    unique = [m for m in bindings.values() if list(m["key"]) == [("Topic", 1), ("EndpointId", 1)]]
+    assert unique and unique[0].get("unique") is True
+
+
+def test_ensure_indexes_without_ttl_omits_retention_index(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    bus.ensure_indexes(processed_message_ttl=None)
+
+    info = client[name]["bus_inbox"].index_information()
+    assert _ttl_seconds(info) == []
+    assert [("EndpointId", 1), ("CloudEventId", 1)] in _index_key_lists(info)
+
+
+def test_run_once_auto_creates_lock_and_dedup_without_ttl(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("OrderPlaced", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):
+        pass
+
+    # No message published; run_once just triggers the auto-provisioning path.
+    bus.run_once("ep")
+
+    info = client[name]["bus_inbox"].index_information()
+    keys = _index_key_lists(info)
+    assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in keys
+    assert [("EndpointId", 1), ("CloudEventId", 1)] in keys
+    assert _ttl_seconds(info) == []  # auto path must not create the data-expiring TTL index
+
+
+def test_ensure_indexes_is_idempotent_with_same_ttl(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    bus.ensure_indexes()
+    bus.ensure_indexes()  # same TTL again must not raise
+
+    assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
+
+
+def test_ensure_indexes_with_conflicting_ttl_raises(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    bus.ensure_indexes(processed_message_ttl=timedelta(days=7))
+    with pytest.raises(OperationFailure):
+        bus.ensure_indexes(processed_message_ttl=timedelta(days=30))
+
+
+def test_explicit_ensure_indexes_after_auto_path_adds_ttl(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("OrderPlaced", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):
+        pass
+
+    bus.run_once("ep")  # auto path: lock + dedup, no TTL
+    assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == []
+
+    bus.ensure_indexes()  # explicit opt-in must still run and add the TTL
+    assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
