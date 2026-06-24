@@ -1,9 +1,9 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from pymongo import ASCENDING, AsyncMongoClient
+from pymongo import AsyncMongoClient
 
-from .. import constants, context, documents, envelope, queries
+from .. import constants, context, documents, envelope, indexes, queries
 from .._sync.pump import Consumer
 from .pump import process_one
 
@@ -15,11 +15,28 @@ class AsyncMongoBus:
         self._inbox = self._db[constants.INBOX_COLLECTION]
         self._bindings = self._db[constants.BINDINGS_COLLECTION]
         self._consumers: list[Consumer] = []
+        self._indexes_ensured = False
+
+    async def ensure_indexes(
+        self, *, processed_message_ttl: timedelta | None = indexes.DEFAULT_PROCESSED_MESSAGE_TTL
+    ) -> None:
+        await self._create_indexes(processed_message_ttl=processed_message_ttl)
+        self._indexes_ensured = True
+
+    async def _create_indexes(self, *, processed_message_ttl: timedelta | None) -> None:
+        for keys, options in indexes.inbox_index_specs(processed_message_ttl=processed_message_ttl):
+            await self._inbox.create_index(keys, **options)
+        keys, options = indexes.bindings_index_spec()
+        await self._bindings.create_index(keys, **options)
+
+    async def _auto_ensure_indexes(self) -> None:
+        if not self._indexes_ensured:
+            await self._create_indexes(processed_message_ttl=None)
+            self._indexes_ensured = True
 
     async def bind(self, type_id: str, *, endpoint_id: str) -> None:
-        await self._bindings.create_index(
-            [("Topic", ASCENDING), ("EndpointId", ASCENDING)], unique=True
-        )
+        keys, options = indexes.bindings_index_spec()
+        await self._bindings.create_index(keys, **options)
         await self._bindings.update_one(
             queries.binding_filter(topic=type_id, endpoint_id=endpoint_id),
             queries.binding_set_on_insert(topic=type_id, endpoint_id=endpoint_id),
@@ -98,12 +115,14 @@ class AsyncMongoBus:
         return register
 
     async def run_once(self, endpoint_id: str) -> bool:
+        await self._auto_ensure_indexes()
         for consumer in self._consumers:
             if consumer.endpoint_id == endpoint_id and await process_one(self._inbox, consumer):
                 return True
         return False
 
     async def run(self, *, stop_event=None) -> None:
+        await self._auto_ensure_indexes()
         while stop_event is None or not stop_event.is_set():
             did_work = False
             for consumer in self._consumers:

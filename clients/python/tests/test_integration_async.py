@@ -226,3 +226,47 @@ async def test_async_run_loop_sleeps_when_no_work_then_stops(mongo):
 
     await client.drop_database(name)
     await client.close()
+
+
+def _index_key_lists(info):
+    return [list(meta["key"]) for meta in info.values()]
+
+
+def _ttl_seconds(info):
+    return [meta["expireAfterSeconds"] for meta in info.values() if "expireAfterSeconds" in meta]
+
+
+async def test_async_ensure_indexes_creates_inbox_and_binding_indexes(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+
+    await bus.ensure_indexes()
+
+    inbox = await client[name]["bus_inbox"].index_information()
+    keys = _index_key_lists(inbox)
+    assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in keys
+    assert [("EndpointId", 1), ("CloudEventId", 1)] in keys
+    assert [("CreatedUtc", 1)] in keys
+    assert _ttl_seconds(inbox) == [7 * 24 * 60 * 60]
+
+    bindings = await client[name]["bus_bindings"].index_information()
+    unique = [m for m in bindings.values() if list(m["key"]) == [("Topic", 1), ("EndpointId", 1)]]
+    assert unique and unique[0].get("unique") is True
+
+
+async def test_async_run_once_auto_creates_lock_and_dedup_without_ttl(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("OrderPlaced", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    async def handle(ctx):
+        pass
+
+    await bus.run_once("ep")  # no message; triggers auto-provisioning
+
+    info = await client[name]["bus_inbox"].index_information()
+    keys = _index_key_lists(info)
+    assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in keys
+    assert [("EndpointId", 1), ("CloudEventId", 1)] in keys
+    assert _ttl_seconds(info) == []
