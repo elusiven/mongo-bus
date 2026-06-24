@@ -72,3 +72,21 @@ def test_serialize_envelope_round_trips():
     )
     text = envelope.serialize_envelope(env)
     assert json.loads(text)["data"]["orderId"] == "123"
+
+
+import pytest
+
+from mongobus.errors import ClaimCheckNotSupportedError
+
+
+def test_parse_envelope_reads_camelcase_keys():
+    text = '{"specVersion":"1.0","id":"abc","type":"OrderPlaced","data":{"orderId":"123"}}'
+    env = envelope.parse_envelope(text)
+    assert env["id"] == "abc"
+    assert env["data"]["orderId"] == "123"
+
+
+def test_parse_envelope_rejects_claim_check_payloads():
+    text = '{"id":"abc","dataContentType":"application/vnd.mongobus.claim-check+json","data":{}}'
+    with pytest.raises(ClaimCheckNotSupportedError):
+        envelope.parse_envelope(text)
