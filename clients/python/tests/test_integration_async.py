@@ -1,5 +1,3 @@
-import json
-
 import pytest
 from pymongo import AsyncMongoClient
 from testcontainers.mongodb import MongoDbContainer
@@ -66,3 +64,22 @@ async def test_async_consume_dead_letters(db):
     doc = await client[name]["bus_inbox"].find_one({})
     assert doc["Status"] == "Dead"
     assert doc["Attempt"] == 1
+
+
+async def test_async_consume_runs_sync_handler(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("OrderPlaced", endpoint_id="ep")
+    received = []
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):
+        received.append(ctx.data["orderId"])
+
+    await bus.publish("OrderPlaced", {"orderId": "99"})
+    handled = await bus.run_once("ep")
+
+    assert handled is True
+    assert received == ["99"]
+    doc = await client[name]["bus_inbox"].find_one({})
+    assert doc["Status"] == "Processed"
