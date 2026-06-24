@@ -1,4 +1,7 @@
+import pytest
+
 from mongobus.claimcheck import core
+from mongobus.constants import CLAIM_CHECK_CONTENT_TYPE
 from mongobus.errors import ClaimCheckError, MongoBusError
 
 
@@ -59,11 +62,6 @@ def test_reference_from_data_with_only_required_fields():
     assert ref.created_at is None
 
 
-import pytest
-
-from mongobus.constants import CLAIM_CHECK_CONTENT_TYPE
-
-
 def test_is_claim_check_true_for_claim_check_content_type():
     assert core.is_claim_check({"dataContentType": CLAIM_CHECK_CONTENT_TYPE}) is True
 
@@ -94,13 +92,8 @@ def test_gzip_round_trips():
 
 def test_gzip_decompress_guards_against_bombs():
     compressed = core.gzip_compress(b"a" * 10_000)
-    with pytest.raises(core_error_type()):
+    with pytest.raises(ClaimCheckError):
         core.gzip_decompress(compressed, max_bytes=100)
-
-
-def core_error_type():
-    from mongobus.errors import ClaimCheckError
-    return ClaimCheckError
 
 
 def test_new_blob_key_is_32_char_hex():

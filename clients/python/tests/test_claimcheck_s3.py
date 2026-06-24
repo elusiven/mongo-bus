@@ -35,3 +35,11 @@ async def test_async_s3_put_and_open_read_round_trip(s3_client):
 
     assert ref.provider == "s3"
     assert await provider.open_read(ref) == b"s3-async"
+
+
+def test_s3_provider_builds_its_own_client_when_none_given():
+    with mock_aws():
+        boto3.client("s3", region_name=REGION).create_bucket(Bucket=BUCKET)
+        provider = S3ClaimCheckProvider(bucket=BUCKET, region_name=REGION)  # no client= -> lazy boto3 path
+        ref = provider.put(b"selfclient", content_type="application/json", metadata=None)
+        assert provider.open_read(ref) == b"selfclient"

@@ -91,6 +91,7 @@ class AsyncMongoBus:
                 size=len(payload_bytes), threshold_bytes=cc.threshold_bytes,
                 enabled=cc.enabled, use_claim_check=use_claim_check,
             ):
+                # createdAt is informational only and need not be byte-identical to .NET's DateTime format.
                 created_at = now.isoformat().replace("+00:00", "Z")
                 metadata = {claimcheck_core.CREATED_AT_KEY: created_at}
                 if cc.compress:

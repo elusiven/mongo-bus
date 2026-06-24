@@ -8,6 +8,9 @@ from pymongo.errors import OperationFailure
 from testcontainers.mongodb import MongoDbContainer
 
 from mongobus import MongoBus
+from mongobus.claimcheck.config import ClaimCheckConfig
+from mongobus.claimcheck.gridfs import GridFsClaimCheckProvider
+from mongobus.errors import ClaimCheckNotSupportedError
 
 
 @pytest.fixture(scope="module")
@@ -356,10 +359,6 @@ def test_explicit_ensure_indexes_after_auto_path_adds_ttl(db):
     assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
 
 
-from mongobus.claimcheck.config import ClaimCheckConfig
-from mongobus.claimcheck.gridfs import GridFsClaimCheckProvider
-
-
 def test_large_message_is_offloaded_and_rehydrated(db):
     client, name = db
     provider = GridFsClaimCheckProvider(client[name])
@@ -447,10 +446,6 @@ def test_claim_check_without_provider_raises(db):
     @consumer_bus.consumer(endpoint_id="ep", type_id="NoProv")
     def handle(ctx):
         pass
-
-    import pytest
-
-    from mongobus.errors import ClaimCheckNotSupportedError
 
     with pytest.raises(ClaimCheckNotSupportedError):
         consumer_bus.run_once("ep")

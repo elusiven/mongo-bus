@@ -1,10 +1,13 @@
 import asyncio
+import json
 
 import pytest
 from pymongo import AsyncMongoClient
 from testcontainers.mongodb import MongoDbContainer
 
 from mongobus import AsyncMongoBus
+from mongobus.claimcheck.config import ClaimCheckConfig
+from mongobus.claimcheck.gridfs import AsyncGridFsClaimCheckProvider
 
 
 @pytest.fixture(scope="module")
@@ -228,12 +231,6 @@ async def test_async_run_loop_sleeps_when_no_work_then_stops(mongo):
     await client.close()
 
 
-import json as _json
-
-from mongobus.claimcheck.config import ClaimCheckConfig
-from mongobus.claimcheck.gridfs import AsyncGridFsClaimCheckProvider
-
-
 async def test_async_large_message_offloaded_and_rehydrated(db):
     client, name = db
     provider = AsyncGridFsClaimCheckProvider(client[name])
@@ -250,7 +247,7 @@ async def test_async_large_message_offloaded_and_rehydrated(db):
     await bus.publish("Big", {"payload": big})
 
     doc = await client[name]["bus_inbox"].find_one({})
-    env = _json.loads(doc["PayloadJson"])
+    env = json.loads(doc["PayloadJson"])
     assert env["dataContentType"] == "application/vnd.mongobus.claim-check+json"
     assert await client[name]["claimcheck.files"].count_documents({}) == 1
 
