@@ -2,6 +2,7 @@ import gzip
 import io
 import uuid
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from ..constants import CLAIM_CHECK_CONTENT_TYPE
 from ..errors import ClaimCheckError
@@ -25,6 +26,28 @@ class ClaimCheckReference:
     content_type: str | None = None
     metadata: dict[str, str] | None = None
     created_at: str | None = None
+
+
+@runtime_checkable
+class ClaimCheckProvider(Protocol):
+    name: str
+
+    def put(
+        self, data: bytes, *, content_type: str | None, metadata: dict[str, str] | None
+    ) -> ClaimCheckReference: ...
+
+    def open_read(self, reference: ClaimCheckReference) -> bytes: ...
+
+
+@runtime_checkable
+class AsyncClaimCheckProvider(Protocol):
+    name: str
+
+    async def put(
+        self, data: bytes, *, content_type: str | None, metadata: dict[str, str] | None
+    ) -> ClaimCheckReference: ...
+
+    async def open_read(self, reference: ClaimCheckReference) -> bytes: ...
 
 
 def reference_to_data(ref: ClaimCheckReference) -> dict:
