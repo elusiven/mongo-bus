@@ -1,4 +1,10 @@
+import gzip
+import io
+import uuid
 from dataclasses import dataclass
+
+from ..constants import CLAIM_CHECK_CONTENT_TYPE
+from ..errors import ClaimCheckError
 
 OBJECT_CONTENT_TYPE = "application/json"
 
@@ -47,3 +53,31 @@ def reference_from_data(data: dict) -> ClaimCheckReference:
         metadata=data.get("metadata"),
         created_at=data.get("createdAt"),
     )
+
+
+def is_claim_check(envelope: dict) -> bool:
+    return envelope.get("dataContentType") == CLAIM_CHECK_CONTENT_TYPE
+
+
+def should_offload(*, size: int, threshold_bytes: int, enabled: bool, use_claim_check: bool | None) -> bool:
+    if use_claim_check:
+        return True
+    return enabled and size >= threshold_bytes
+
+
+def gzip_compress(data: bytes) -> bytes:
+    return gzip.compress(data)
+
+
+def gzip_decompress(data: bytes, *, max_bytes: int) -> bytes:
+    decompressor = gzip.GzipFile(fileobj=io.BytesIO(data))
+    out = decompressor.read(max_bytes + 1)
+    if len(out) > max_bytes:
+        raise ClaimCheckError(
+            f"Decompressed claim-check payload exceeds the {max_bytes}-byte limit."
+        )
+    return out
+
+
+def new_blob_key() -> str:
+    return uuid.uuid4().hex

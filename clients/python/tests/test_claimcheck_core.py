@@ -57,3 +57,54 @@ def test_reference_from_data_with_only_required_fields():
     assert ref.content_type is None
     assert ref.metadata is None
     assert ref.created_at is None
+
+
+import pytest
+
+from mongobus.constants import CLAIM_CHECK_CONTENT_TYPE
+
+
+def test_is_claim_check_true_for_claim_check_content_type():
+    assert core.is_claim_check({"dataContentType": CLAIM_CHECK_CONTENT_TYPE}) is True
+
+
+def test_is_claim_check_false_otherwise():
+    assert core.is_claim_check({"dataContentType": "application/json"}) is False
+    assert core.is_claim_check({}) is False
+
+
+def test_should_offload_forced_by_use_claim_check():
+    assert core.should_offload(size=1, threshold_bytes=999, enabled=False, use_claim_check=True) is True
+
+
+def test_should_offload_threshold_when_enabled():
+    assert core.should_offload(size=100, threshold_bytes=100, enabled=True, use_claim_check=None) is True
+    assert core.should_offload(size=99, threshold_bytes=100, enabled=True, use_claim_check=None) is False
+
+
+def test_should_offload_disabled_and_not_forced():
+    assert core.should_offload(size=10_000, threshold_bytes=100, enabled=False, use_claim_check=None) is False
+
+
+def test_gzip_round_trips():
+    original = b'{"orderId": "123"}' * 100
+    compressed = core.gzip_compress(original)
+    assert core.gzip_decompress(compressed, max_bytes=1_000_000) == original
+
+
+def test_gzip_decompress_guards_against_bombs():
+    compressed = core.gzip_compress(b"a" * 10_000)
+    with pytest.raises(core_error_type()):
+        core.gzip_decompress(compressed, max_bytes=100)
+
+
+def core_error_type():
+    from mongobus.errors import ClaimCheckError
+    return ClaimCheckError
+
+
+def test_new_blob_key_is_32_char_hex():
+    key = core.new_blob_key()
+    assert len(key) == 32
+    assert "-" not in key
+    int(key, 16)
