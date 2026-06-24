@@ -44,5 +44,27 @@ async def test_async_gridfs_put_and_open_read_round_trip(mongo):
     assert ref.provider == "gridfs"
     assert ref.key and len(ref.key) == 32
     assert await provider.open_read(ref) == b"hello-async"
+    # stored under the claimcheck bucket with filename == key
+    stored = await db["claimcheck.files"].find_one({"filename": ref.key})
+    assert stored is not None
+    assert stored["metadata"]["contentType"] == "application/json"
     await client.drop_database("cc_async")
+    await client.close()
+
+
+async def test_async_gridfs_omits_content_type_when_none(mongo):
+    client = AsyncMongoClient(mongo)
+    db = client["cc_async_none"]
+    await client.drop_database("cc_async_none")
+    provider = AsyncGridFsClaimCheckProvider(db)
+
+    ref = await provider.put(b"x", content_type=None, metadata=None)
+
+    assert ref.provider == "gridfs"
+    assert ref.key and len(ref.key) == 32
+    # stored under the claimcheck bucket; metadata should not contain contentType
+    stored = await db["claimcheck.files"].find_one({"filename": ref.key})
+    assert stored is not None
+    assert "contentType" not in (stored.get("metadata") or {})
+    await client.drop_database("cc_async_none")
     await client.close()
