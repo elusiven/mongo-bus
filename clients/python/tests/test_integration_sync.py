@@ -354,3 +354,103 @@ def test_explicit_ensure_indexes_after_auto_path_adds_ttl(db):
 
     bus.ensure_indexes()  # explicit opt-in must still run and add the TTL
     assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
+
+
+from mongobus.claimcheck.config import ClaimCheckConfig
+from mongobus.claimcheck.gridfs import GridFsClaimCheckProvider
+
+
+def test_large_message_is_offloaded_and_rehydrated(db):
+    client, name = db
+    provider = GridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=128)
+    bus = MongoBus(uri="", database=name, client=client, claim_check=cc)
+    bus.bind("Big", endpoint_id="ep")
+    received = []
+
+    @bus.consumer(endpoint_id="ep", type_id="Big")
+    def handle(ctx):
+        received.append(ctx.data["payload"])
+
+    big = "x" * 5000
+    bus.publish("Big", {"payload": big})
+
+    inbox_doc = client[name]["bus_inbox"].find_one({})
+    env = json.loads(inbox_doc["PayloadJson"])
+    assert env["dataContentType"] == "application/vnd.mongobus.claim-check+json"
+    assert env["data"]["provider"] == "gridfs"
+    assert client[name]["claimcheck.files"].count_documents({}) == 1
+
+    assert bus.run_once("ep") is True
+    assert received == [big]
+
+
+def test_small_message_stays_inline(db):
+    client, name = db
+    provider = GridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=10_000)
+    bus = MongoBus(uri="", database=name, client=client, claim_check=cc)
+    bus.bind("Small", endpoint_id="ep")
+    bus.publish("Small", {"payload": "tiny"})
+
+    env = json.loads(client[name]["bus_inbox"].find_one({})["PayloadJson"])
+    assert "dataContentType" not in env
+    assert env["data"] == {"payload": "tiny"}
+    assert client[name]["claimcheck.files"].count_documents({}) == 0
+
+
+def test_use_claim_check_forces_offload_below_threshold(db):
+    client, name = db
+    provider = GridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=False, threshold_bytes=10_000)
+    bus = MongoBus(uri="", database=name, client=client, claim_check=cc)
+    bus.bind("Forced", endpoint_id="ep")
+    bus.publish("Forced", {"payload": "tiny"}, use_claim_check=True)
+
+    env = json.loads(client[name]["bus_inbox"].find_one({})["PayloadJson"])
+    assert env["dataContentType"] == "application/vnd.mongobus.claim-check+json"
+
+
+def test_compressed_claim_check_round_trips(db):
+    client, name = db
+    provider = GridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=128, compress=True)
+    bus = MongoBus(uri="", database=name, client=client, claim_check=cc)
+    bus.bind("Zip", endpoint_id="ep")
+    received = []
+
+    @bus.consumer(endpoint_id="ep", type_id="Zip")
+    def handle(ctx):
+        received.append(ctx.data["payload"])
+
+    big = "y" * 5000
+    bus.publish("Zip", {"payload": big})
+    env = json.loads(client[name]["bus_inbox"].find_one({})["PayloadJson"])
+    assert env["data"]["metadata"]["x-mongobus-compression"] == "gzip"
+
+    assert bus.run_once("ep") is True
+    assert received == [big]
+
+
+def test_claim_check_without_provider_raises(db):
+    client, name = db
+    # Publish a claim-checked message using a provider-backed bus...
+    provider = GridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=128)
+    publisher = MongoBus(uri="", database=name, client=client, claim_check=cc)
+    publisher.bind("NoProv", endpoint_id="ep")
+    publisher.publish("NoProv", {"payload": "z" * 5000})
+
+    # ...then consume with a bus that has NO claim_check configured.
+    consumer_bus = MongoBus(uri="", database=name, client=client)
+
+    @consumer_bus.consumer(endpoint_id="ep", type_id="NoProv")
+    def handle(ctx):
+        pass
+
+    import pytest
+
+    from mongobus.errors import ClaimCheckNotSupportedError
+
+    with pytest.raises(ClaimCheckNotSupportedError):
+        consumer_bus.run_once("ep")

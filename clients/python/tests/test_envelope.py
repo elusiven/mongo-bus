@@ -109,7 +109,8 @@ def test_parse_envelope_reads_camelcase_keys():
     assert env["data"]["orderId"] == "123"
 
 
-def test_parse_envelope_rejects_claim_check_payloads():
-    text = '{"id":"abc","dataContentType":"application/vnd.mongobus.claim-check+json","data":{}}'
-    with pytest.raises(ClaimCheckNotSupportedError):
-        envelope.parse_envelope(text)
+def test_parse_envelope_returns_claim_check_dict():
+    text = '{"id":"abc","dataContentType":"application/vnd.mongobus.claim-check+json","data":{"provider":"gridfs"}}'
+    env = envelope.parse_envelope(text)
+    assert env["dataContentType"] == "application/vnd.mongobus.claim-check+json"
+    assert env["data"]["provider"] == "gridfs"
