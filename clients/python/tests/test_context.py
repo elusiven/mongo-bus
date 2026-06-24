@@ -54,3 +54,8 @@ def test_resolve_causation_uses_context_cloud_event_id():
 
 def test_resolve_causation_is_none_without_context():
     assert context.resolve_causation_id(None) is None
+
+
+def test_resolve_causation_prefers_explicit():
+    # Covers the `return explicit` branch (line 63 in context.py).
+    assert context.resolve_causation_id("explicit-cause") == "explicit-cause"

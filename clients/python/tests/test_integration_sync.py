@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 from pymongo import MongoClient
@@ -139,3 +140,125 @@ def test_idempotency_skips_duplicate_cloud_event(db):
     assert statuses.count("Processed") == 2
     skipped = client[name]["bus_inbox"].find_one({"LastError": "Skipped due to idempotency"})
     assert skipped is not None
+
+
+def test_run_once_returns_false_when_no_messages(db):
+    # Covers the process_one return-False path (empty inbox → doc is None).
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("OrderPlaced", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):  # pragma: no cover
+        pass
+
+    result = bus.run_once("ep")  # inbox is empty — process_one must return False
+    assert result is False
+
+
+def test_run_once_returns_false_when_endpoint_not_matched(db):
+    # Covers the branch in run_once where consumer.endpoint_id != requested endpoint_id.
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("OrderPlaced", endpoint_id="ep-a")
+
+    @bus.consumer(endpoint_id="ep-a", type_id="OrderPlaced")
+    def handle(ctx):  # pragma: no cover
+        pass
+
+    bus.publish("OrderPlaced", {"orderId": "1"})
+    # "ep-b" doesn't match "ep-a" consumer — run_once iterates, finds no match, returns False.
+    result = bus.run_once("ep-b")
+    assert result is False
+
+
+def test_run_loop_processes_message_then_stops(mongo):
+    # Covers the run() loop body (sync bus.run with stop_event).
+    client = MongoClient(mongo)
+    name = "testdb_run_loop"
+    client.drop_database(name)
+
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("OrderPlaced", endpoint_id="ep")
+    received = []
+    stop = threading.Event()
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):
+        received.append(ctx.data["orderId"])
+        stop.set()  # signal the loop to exit after processing this message
+
+    bus.publish("OrderPlaced", {"orderId": "run-loop"})
+
+    thread = threading.Thread(target=bus.run, kwargs={"stop_event": stop}, daemon=True)
+    thread.start()
+    thread.join(timeout=15)
+
+    assert not thread.is_alive(), "run() did not stop within 15 seconds"
+    assert received == ["run-loop"]
+
+    client.drop_database(name)
+    client.close()
+
+
+def test_run_exits_immediately_when_stop_event_already_set(mongo):
+    # Covers the while-condition branch: stop_event already set → loop body never executes.
+    client = MongoClient(mongo)
+    name = "testdb_run_already_stopped"
+    client.drop_database(name)
+
+    bus = MongoBus(uri="", database=name, client=client)
+
+    stop = threading.Event()
+    stop.set()  # set before run() is called
+
+    thread = threading.Thread(target=bus.run, kwargs={"stop_event": stop}, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), "run() should have returned immediately"
+
+    client.drop_database(name)
+    client.close()
+
+
+def test_construct_bus_from_uri_without_client(mongo):
+    # Covers the client=None construction branch: MongoBus(uri=...) must build its own MongoClient.
+    name = "testdb_uri_ctor"
+    bus = MongoBus(uri=mongo, database=name)
+    bus.bind("OrderPlaced", endpoint_id="ep")
+    created = bus.publish("OrderPlaced", {"orderId": "uri-ctor"})
+    assert created == 1
+    bus._client.drop_database(name)
+    bus._client.close()
+
+
+def test_run_loop_sleeps_when_no_work_then_stops(mongo):
+    # Covers the time.sleep branch in run() when no messages are available (did_work=False).
+    client = MongoClient(mongo)
+    name = "testdb_run_sleep"
+    client.drop_database(name)
+
+    bus = MongoBus(uri="", database=name, client=client)
+    stop = threading.Event()
+
+    @bus.consumer(endpoint_id="ep", type_id="OrderPlaced")
+    def handle(ctx):  # pragma: no cover
+        pass
+
+    # Delay stop to let run() enter at least one idle iteration (triggering the sleep path).
+    def stop_soon():
+        threading.Event().wait(timeout=0.15)
+        stop.set()
+
+    stopper = threading.Thread(target=stop_soon, daemon=True)
+    stopper.start()
+
+    thread = threading.Thread(target=bus.run, kwargs={"stop_event": stop}, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), "run() did not stop within 10 seconds"
+
+    client.drop_database(name)
+    client.close()
