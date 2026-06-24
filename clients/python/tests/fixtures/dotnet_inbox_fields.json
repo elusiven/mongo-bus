@@ -1,0 +1,1 @@
+["EndpointId", "Topic", "TypeId", "PayloadJson", "CreatedUtc", "VisibleUtc", "LockedUntilUtc", "LockOwner", "Attempt", "Status", "ProcessedUtc", "LastError", "CorrelationId", "CausationId", "CloudEventId"]
