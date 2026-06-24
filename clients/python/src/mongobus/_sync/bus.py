@@ -1,8 +1,10 @@
+import time
 from datetime import datetime, timezone
 
 from pymongo import ASCENDING, MongoClient
 
 from .. import constants, context, documents, envelope, queries
+from .pump import Consumer, process_one
 
 
 class MongoBus:
@@ -11,6 +13,7 @@ class MongoBus:
         self._db = self._client[database]
         self._inbox = self._db[constants.INBOX_COLLECTION]
         self._bindings = self._db[constants.BINDINGS_COLLECTION]
+        self._consumers: list[Consumer] = []
 
     def bind(self, type_id: str, *, endpoint_id: str) -> None:
         self._bindings.create_index(
@@ -74,3 +77,31 @@ class MongoBus:
         ]
         self._inbox.insert_many(docs)
         return len(docs)
+
+    def consumer(
+        self,
+        *,
+        endpoint_id: str,
+        type_id: str,
+        max_attempts: int = constants.DEFAULT_MAX_ATTEMPTS,
+        idempotent: bool = True,
+    ):
+        def register(handler):
+            self._consumers.append(
+                Consumer(endpoint_id, type_id, handler, max_attempts, idempotent)
+            )
+            return handler
+
+        return register
+
+    def run_once(self, endpoint_id: str) -> bool:
+        for consumer in self._consumers:
+            if consumer.endpoint_id == endpoint_id and process_one(self._inbox, consumer):
+                return True
+        return False
+
+    def run(self, *, stop_event=None) -> None:
+        while stop_event is None or not stop_event.is_set():
+            did_work = any(process_one(self._inbox, c) for c in self._consumers)
+            if not did_work:
+                time.sleep(constants.DEFAULT_POLL_SECONDS)
