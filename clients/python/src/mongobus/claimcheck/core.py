@@ -1,0 +1,8 @@
+OBJECT_CONTENT_TYPE = "application/json"
+
+CREATED_AT_KEY = "x-mongobus-created-at"
+COMPRESSION_KEY = "x-mongobus-compression"
+COMPRESSION_GZIP = "gzip"
+
+DEFAULT_THRESHOLD_BYTES = 256 * 1024
+DEFAULT_MAX_DECOMPRESSED_BYTES = 100 * 1024 * 1024
