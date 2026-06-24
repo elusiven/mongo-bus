@@ -228,6 +228,54 @@ async def test_async_run_loop_sleeps_when_no_work_then_stops(mongo):
     await client.close()
 
 
+import json as _json
+
+from mongobus.claimcheck.config import ClaimCheckConfig
+from mongobus.claimcheck.gridfs import AsyncGridFsClaimCheckProvider
+
+
+async def test_async_large_message_offloaded_and_rehydrated(db):
+    client, name = db
+    provider = AsyncGridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=128)
+    bus = AsyncMongoBus(uri="", database=name, client=client, claim_check=cc)
+    await bus.bind("Big", endpoint_id="ep")
+    received = []
+
+    @bus.consumer(endpoint_id="ep", type_id="Big")
+    async def handle(ctx):
+        received.append(ctx.data["payload"])
+
+    big = "x" * 5000
+    await bus.publish("Big", {"payload": big})
+
+    doc = await client[name]["bus_inbox"].find_one({})
+    env = _json.loads(doc["PayloadJson"])
+    assert env["dataContentType"] == "application/vnd.mongobus.claim-check+json"
+    assert await client[name]["claimcheck.files"].count_documents({}) == 1
+
+    assert await bus.run_once("ep") is True
+    assert received == [big]
+
+
+async def test_async_compressed_claim_check_round_trips(db):
+    client, name = db
+    provider = AsyncGridFsClaimCheckProvider(client[name])
+    cc = ClaimCheckConfig(provider=provider, enabled=True, threshold_bytes=128, compress=True)
+    bus = AsyncMongoBus(uri="", database=name, client=client, claim_check=cc)
+    await bus.bind("Zip", endpoint_id="ep")
+    received = []
+
+    @bus.consumer(endpoint_id="ep", type_id="Zip")
+    async def handle(ctx):
+        received.append(ctx.data["payload"])
+
+    big = "y" * 5000
+    await bus.publish("Zip", {"payload": big})
+    await bus.run_once("ep")
+    assert received == [big]
+
+
 def _index_key_lists(info):
     return [list(meta["key"]) for meta in info.values()]
 

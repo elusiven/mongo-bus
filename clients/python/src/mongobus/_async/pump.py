@@ -1,14 +1,17 @@
 import inspect
+import json
 from datetime import datetime, timezone
 
 from pymongo import ASCENDING
 from pymongo.collection import ReturnDocument
 
 from .. import constants, context, dispatch, envelope, queries
+from ..claimcheck import core as claimcheck_core
+from ..errors import ClaimCheckNotSupportedError
 from .._sync.pump import Consumer
 
 
-async def process_one(inbox, consumer: Consumer) -> bool:
+async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
     now = datetime.now(timezone.utc)
     pump_id = dispatch.build_pump_id(consumer.endpoint_id)
     doc = await inbox.find_one_and_update(
@@ -21,6 +24,16 @@ async def process_one(inbox, consumer: Consumer) -> bool:
         return False
 
     env = envelope.parse_envelope(doc["PayloadJson"])
+    if claimcheck_core.is_claim_check(env):
+        if claim_check is None:
+            raise ClaimCheckNotSupportedError(
+                "Received a claim-check payload but no claim_check provider is configured."
+            )
+        reference = claimcheck_core.reference_from_data(env["data"])
+        blob = await claim_check.provider.open_read(reference)
+        if (reference.metadata or {}).get(claimcheck_core.COMPRESSION_KEY) == claimcheck_core.COMPRESSION_GZIP:
+            blob = claimcheck_core.gzip_decompress(blob, max_bytes=claim_check.max_decompressed_bytes)
+        env = {**env, "data": json.loads(blob)}
     ctx = context.ConsumeContext.from_message(env, doc)
 
     if consumer.idempotent and await _already_processed(inbox, ctx, doc["_id"]):
