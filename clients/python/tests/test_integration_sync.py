@@ -11,6 +11,7 @@ from mongobus import MongoBus
 from mongobus.claimcheck.config import ClaimCheckConfig
 from mongobus.claimcheck.gridfs import GridFsClaimCheckProvider
 from mongobus.errors import ClaimCheckNotSupportedError
+from tests.support import utc_now_naive
 
 
 @pytest.fixture(scope="module")
@@ -449,3 +450,46 @@ def test_claim_check_without_provider_raises(db):
 
     with pytest.raises(ClaimCheckNotSupportedError):
         consumer_bus.run_once("ep")
+
+
+def test_consumer_locks_for_sixty_seconds_by_default(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested")
+    def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    assert bus.run_once("ep") is True
+
+    assert timedelta(seconds=50) < lock_windows[0] <= timedelta(seconds=60)
+
+
+def test_consumer_locks_for_its_configured_lock_seconds(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=120)
+    def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    assert bus.run_once("ep") is True
+
+    assert timedelta(seconds=110) < lock_windows[0] <= timedelta(seconds=120)
+
+
+def test_consumer_registration_rejects_lock_seconds_below_three(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    with pytest.raises(ValueError, match="lock_seconds must be an int >= 3"):
+
+        @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=2)
+        def handle(ctx):  # pragma: no cover - registration fails first
+            pass

@@ -20,5 +20,6 @@ def test_envelope_defaults_match_dotnet():
 
 def test_runtime_defaults():
     assert constants.DEFAULT_LOCK_SECONDS == 60
+    assert constants.MIN_LOCK_SECONDS == 3
     assert constants.DEFAULT_MAX_ATTEMPTS == 10
     assert constants.DEFAULT_POLL_SECONDS == 0.05

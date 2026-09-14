@@ -16,7 +16,7 @@ async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
     pump_id = dispatch.build_pump_id(consumer.endpoint_id)
     doc = await inbox.find_one_and_update(
         queries.lock_filter(endpoint_id=consumer.endpoint_id, now=now, type_ids=[consumer.type_id]),
-        queries.lock_update(now=now, lock_seconds=constants.DEFAULT_LOCK_SECONDS, pump_id=pump_id),
+        queries.lock_update(now=now, lock_seconds=consumer.lock_seconds, pump_id=pump_id),
         sort=[("VisibleUtc", ASCENDING)],
         return_document=ReturnDocument.AFTER,
     )

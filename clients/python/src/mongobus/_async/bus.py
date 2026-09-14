@@ -142,10 +142,11 @@ class AsyncMongoBus:
         type_id: str,
         max_attempts: int = constants.DEFAULT_MAX_ATTEMPTS,
         idempotent: bool = True,
+        lock_seconds: int = constants.DEFAULT_LOCK_SECONDS,
     ):
         def register(handler):
             self._consumers.append(
-                Consumer(endpoint_id, type_id, handler, max_attempts, idempotent)
+                Consumer(endpoint_id, type_id, handler, max_attempts, idempotent, lock_seconds)
             )
             return handler
 

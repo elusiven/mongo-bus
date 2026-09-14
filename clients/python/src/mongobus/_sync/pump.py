@@ -18,6 +18,13 @@ class Consumer:
     handler: Callable
     max_attempts: int
     idempotent: bool
+    lock_seconds: int = constants.DEFAULT_LOCK_SECONDS
+
+    def __post_init__(self) -> None:
+        if type(self.lock_seconds) is not int or self.lock_seconds < constants.MIN_LOCK_SECONDS:
+            raise ValueError(
+                f"lock_seconds must be an int >= {constants.MIN_LOCK_SECONDS}, got {self.lock_seconds!r}"
+            )
 
 
 def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
@@ -25,7 +32,7 @@ def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
     pump_id = dispatch.build_pump_id(consumer.endpoint_id)
     doc = inbox.find_one_and_update(
         queries.lock_filter(endpoint_id=consumer.endpoint_id, now=now, type_ids=[consumer.type_id]),
-        queries.lock_update(now=now, lock_seconds=constants.DEFAULT_LOCK_SECONDS, pump_id=pump_id),
+        queries.lock_update(now=now, lock_seconds=consumer.lock_seconds, pump_id=pump_id),
         sort=[("VisibleUtc", ASCENDING)],
         return_document=ReturnDocument.AFTER,
     )
