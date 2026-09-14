@@ -76,3 +76,24 @@ def test_binding_filter_and_set_on_insert():
 
 def test_bindings_for_topic_filter():
     assert queries.bindings_for_topic_filter(topic="T") == {"Topic": "T"}
+
+
+def test_owned_message_filter_requires_this_delivery_to_hold_the_lock():
+    assert queries.owned_message_filter(message_id="OID", pump_id="host:guid:ep") == {
+        "_id": "OID",
+        "LockOwner": "host:guid:ep",
+    }
+
+
+def test_renew_lock_filter_only_matches_a_pending_message_this_delivery_owns():
+    assert queries.renew_lock_filter(message_id="OID", pump_id="host:guid:ep") == {
+        "_id": "OID",
+        "LockOwner": "host:guid:ep",
+        "Status": "Pending",
+    }
+
+
+def test_renew_lock_update_extends_only_the_lock_expiry():
+    assert queries.renew_lock_update(now=NOW, lock_seconds=120) == {
+        "$set": {"LockedUntilUtc": NOW + timedelta(seconds=120)}
+    }

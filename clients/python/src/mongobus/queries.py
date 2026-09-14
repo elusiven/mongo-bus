@@ -24,6 +24,18 @@ def lock_update(*, now: datetime, lock_seconds: int, pump_id: str) -> dict:
     }
 
 
+def owned_message_filter(*, message_id, pump_id: str) -> dict:
+    return {"_id": message_id, "LockOwner": pump_id}
+
+
+def renew_lock_filter(*, message_id, pump_id: str) -> dict:
+    return {"_id": message_id, "LockOwner": pump_id, "Status": STATUS_PENDING}
+
+
+def renew_lock_update(*, now: datetime, lock_seconds: int) -> dict:
+    return {"$set": {"LockedUntilUtc": now + timedelta(seconds=lock_seconds)}}
+
+
 def dedup_filter(*, endpoint_id: str, cloud_event_id: str, exclude_id) -> dict:
     return {
         "EndpointId": endpoint_id,
