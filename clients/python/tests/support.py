@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Callable
@@ -14,4 +15,14 @@ def wait_until(condition: Callable[[], bool], *, timeout_seconds: float) -> bool
         if condition():
             return True
         time.sleep(0.05)
+    return condition()
+
+
+async def async_wait_until(condition: Callable[[], bool], *, timeout_seconds: float) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while loop.time() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.05)
     return condition()

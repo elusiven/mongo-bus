@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 from pymongo import ASCENDING
 from pymongo.collection import ReturnDocument
 
-from .. import constants, context, dispatch, envelope, queries
+from .. import context, dispatch, envelope, queries
 from ..claimcheck import core as claimcheck_core
 from ..errors import ClaimCheckNotSupportedError
 from .._sync.pump import Consumer
+from .renewal import AsyncLockRenewer
 
 
 async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
@@ -35,10 +36,11 @@ async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
             blob = claimcheck_core.gzip_decompress(blob, max_bytes=claim_check.max_decompressed_bytes)
         env = {**env, "data": json.loads(blob)}
     ctx = context.ConsumeContext.from_message(env, doc)
+    still_owned = queries.owned_message_filter(message_id=doc["_id"], pump_id=pump_id)
 
     if consumer.idempotent and await _already_processed(inbox, ctx, doc["_id"]):
         await inbox.update_one(
-            {"_id": doc["_id"]},
+            still_owned,
             queries.processed_update(
                 now=datetime.now(timezone.utc),
                 last_error="Skipped due to idempotency",
@@ -48,12 +50,19 @@ async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
 
     try:
         with context.use_context(ctx):
-            result = consumer.handler(ctx)
-            if inspect.isawaitable(result):
-                await result
+            async with AsyncLockRenewer(
+                inbox,
+                message_id=doc["_id"],
+                pump_id=pump_id,
+                lock_seconds=consumer.lock_seconds,
+                lock_status=ctx.lock_status,
+            ):
+                result = consumer.handler(ctx)
+                if inspect.isawaitable(result):
+                    await result
     except Exception as exc:  # noqa: BLE001 - failure is mapped to retry/dead-letter
         await inbox.update_one(
-            {"_id": doc["_id"]},
+            still_owned,
             dispatch.plan_failure(
                 attempt=doc["Attempt"],
                 max_attempts=consumer.max_attempts,
@@ -64,7 +73,7 @@ async def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
         return True
 
     await inbox.update_one(
-        {"_id": doc["_id"]},
+        still_owned,
         queries.processed_update(now=datetime.now(timezone.utc)),
     )
     return True

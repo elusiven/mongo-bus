@@ -1,9 +1,11 @@
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
 from pymongo.errors import PyMongoError
 
 from mongobus import queries
+from mongobus._async.renewal import AsyncLockRenewer
 from mongobus._sync.renewal import LockRenewer
 from mongobus.context import LockStatus
 
@@ -84,6 +86,66 @@ def test_renewer_stops_renewing_once_the_lock_is_lost():
 
     with _renewer(inbox, status):
         time.sleep(2.5)
+
+    assert len(inbox.updates) == 1
+    assert status.lost is True
+
+
+class _AsyncScriptedInbox(_ScriptedInbox):
+    async def update_one(self, filter_, update):
+        return self._answer(filter_, update)
+
+
+def _async_renewer(inbox, status, lock_seconds=3):
+    return AsyncLockRenewer(
+        inbox, message_id=MESSAGE_ID, pump_id=PUMP_ID, lock_seconds=lock_seconds, lock_status=status
+    )
+
+
+async def test_async_renew_once_extends_the_lock_while_this_delivery_owns_it():
+    inbox, status = _AsyncScriptedInbox(1), LockStatus()
+    before = datetime.now(timezone.utc)
+
+    assert await _async_renewer(inbox, status, lock_seconds=120).renew_once() is True
+
+    filter_, update = inbox.updates[0]
+    assert filter_ == queries.renew_lock_filter(message_id=MESSAGE_ID, pump_id=PUMP_ID)
+    assert update["$set"]["LockedUntilUtc"] >= before + timedelta(seconds=120)
+    assert status.lost is False
+
+
+async def test_async_renew_once_marks_the_lock_lost_when_no_document_matches():
+    inbox, status = _AsyncScriptedInbox(0), LockStatus()
+
+    assert await _async_renewer(inbox, status).renew_once() is False
+    assert status.lost is True
+
+
+async def test_async_renew_once_keeps_the_lock_state_on_a_driver_error():
+    inbox, status = _AsyncScriptedInbox(PyMongoError("network blip")), LockStatus()
+
+    assert await _async_renewer(inbox, status).renew_once() is True
+    assert status.lost is False
+
+
+async def test_async_renewer_keeps_renewing_until_the_handler_finishes():
+    inbox, status = _AsyncScriptedInbox(), LockStatus()
+
+    async with _async_renewer(inbox, status):
+        await asyncio.sleep(2.5)
+    renewals_at_exit = len(inbox.updates)
+    await asyncio.sleep(1.5)
+
+    assert renewals_at_exit >= 2
+    assert len(inbox.updates) == renewals_at_exit
+    assert status.lost is False
+
+
+async def test_async_renewer_stops_renewing_once_the_lock_is_lost():
+    inbox, status = _AsyncScriptedInbox(0), LockStatus()
+
+    async with _async_renewer(inbox, status):
+        await asyncio.sleep(2.5)
 
     assert len(inbox.updates) == 1
     assert status.lost is True
