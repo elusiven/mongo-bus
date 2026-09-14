@@ -10,5 +10,6 @@ DEFAULT_SOURCE = "urn:mongobus:unknown"
 CLAIM_CHECK_CONTENT_TYPE = "application/vnd.mongobus.claim-check+json"
 
 DEFAULT_LOCK_SECONDS = 60
+MIN_LOCK_SECONDS = 3
 DEFAULT_MAX_ATTEMPTS = 10
 DEFAULT_POLL_SECONDS = 0.05

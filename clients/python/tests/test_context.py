@@ -59,3 +59,20 @@ def test_resolve_causation_is_none_without_context():
 def test_resolve_causation_prefers_explicit():
     # Covers the `return explicit` branch (line 63 in context.py).
     assert context.resolve_causation_id("explicit-cause") == "explicit-cause"
+
+
+def test_lock_is_not_lost_for_a_new_delivery():
+    assert _ctx().lock_lost is False
+
+
+def test_lock_lost_stays_true_once_marked():
+    ctx = _ctx()
+    ctx.lock_status.mark_lost()
+    ctx.lock_status.mark_lost()
+    assert ctx.lock_lost is True
+
+
+def test_each_delivery_gets_its_own_lock_status():
+    first, second = _ctx(), _ctx()
+    first.lock_status.mark_lost()
+    assert second.lock_lost is False

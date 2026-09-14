@@ -17,3 +17,7 @@ def plan_failure(*, attempt: int, max_attempts: int, now: datetime, error: str) 
     return queries.retry_update(
         now=now, next_attempt=next_attempt, visible_utc=visible, last_error=error
     )
+
+
+def renewal_interval_seconds(lock_seconds: int) -> float:
+    return lock_seconds / 3

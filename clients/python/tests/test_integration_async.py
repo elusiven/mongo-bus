@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import timedelta
 
 import pytest
 from pymongo import AsyncMongoClient
@@ -8,6 +9,7 @@ from testcontainers.mongodb import MongoDbContainer
 from mongobus import AsyncMongoBus
 from mongobus.claimcheck.config import ClaimCheckConfig
 from mongobus.claimcheck.gridfs import AsyncGridFsClaimCheckProvider
+from tests.support import async_wait_until, utc_now_naive
 
 
 @pytest.fixture(scope="module")
@@ -315,3 +317,123 @@ async def test_async_run_once_auto_creates_lock_and_dedup_without_ttl(db):
     assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in keys
     assert [("EndpointId", 1), ("CloudEventId", 1)] in keys
     assert _ttl_seconds(info) == []
+
+
+async def test_async_consumer_locks_for_sixty_seconds_by_default(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested")
+    async def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    await bus.publish("SongRequested", {"songId": "s-1"})
+    assert await bus.run_once("ep") is True
+
+    assert timedelta(seconds=50) < lock_windows[0] <= timedelta(seconds=60)
+
+
+async def test_async_consumer_locks_for_its_configured_lock_seconds(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=120)
+    async def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    await bus.publish("SongRequested", {"songId": "s-1"})
+    assert await bus.run_once("ep") is True
+
+    assert timedelta(seconds=110) < lock_windows[0] <= timedelta(seconds=120)
+
+
+async def test_async_consumer_registration_rejects_lock_seconds_below_three(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+
+    with pytest.raises(ValueError, match="lock_seconds must be an int >= 3"):
+
+        @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=2)
+        async def handle(ctx):  # pragma: no cover - registration fails first
+            pass
+
+
+async def test_async_lock_is_renewed_while_a_long_handler_runs(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    competing_bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("SongRequested", endpoint_id="ep")
+    observed = {}
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3)
+    async def handle(ctx):
+        await asyncio.sleep(4.5)  # outlives the original 3 s lock; only renewal keeps the message ours
+        observed["competitor_took_message"] = await competing_bus.run_once("ep")
+        current = await inbox.find_one({"_id": ctx.raw["_id"]})
+        observed["lock_still_ours"] = current["LockOwner"] == ctx.raw["LockOwner"]
+        observed["locked_until_in_future"] = current["LockedUntilUtc"] > utc_now_naive()
+        observed["lock_lost"] = ctx.lock_lost
+
+    @competing_bus.consumer(endpoint_id="ep", type_id="SongRequested")
+    async def compete(ctx):  # pragma: no cover - must never receive the locked message
+        pass
+
+    await bus.publish("SongRequested", {"songId": "s-1"})
+    assert await bus.run_once("ep") is True
+
+    assert observed == {
+        "competitor_took_message": False,
+        "lock_still_ours": True,
+        "locked_until_in_future": True,
+        "lock_lost": False,
+    }
+    assert (await inbox.find_one({}))["Status"] == "Processed"
+
+
+async def test_async_handler_learns_its_lock_was_lost_and_its_success_is_discarded(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("SongRequested", endpoint_id="ep")
+    observed = {}
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3)
+    async def handle(ctx):
+        await inbox.update_one({"_id": ctx.raw["_id"]}, {"$set": {"LockOwner": "another-pump"}})
+        observed["lock_lost"] = await async_wait_until(lambda: ctx.lock_lost, timeout_seconds=5)
+
+    await bus.publish("SongRequested", {"songId": "s-1"})
+    await bus.run_once("ep")
+
+    doc = await inbox.find_one({})
+    assert observed["lock_lost"] is True
+    assert doc["Status"] == "Pending"
+    assert doc["LockOwner"] == "another-pump"
+    assert doc["Attempt"] == 0
+
+
+async def test_async_failure_of_a_handler_that_lost_its_lock_is_discarded(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+    await bus.bind("SongRequested", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3, max_attempts=1)
+    async def handle(ctx):
+        await inbox.update_one({"_id": ctx.raw["_id"]}, {"$set": {"LockOwner": "another-pump"}})
+        await async_wait_until(lambda: ctx.lock_lost, timeout_seconds=5)
+        raise RuntimeError("stale worker failed")
+
+    await bus.publish("SongRequested", {"songId": "s-1"})
+    await bus.run_once("ep")
+
+    doc = await inbox.find_one({})
+    assert doc["Status"] == "Pending"
+    assert doc["LockOwner"] == "another-pump"
+    assert doc["Attempt"] == 0
+    assert doc["LastError"] != "stale worker failed"

@@ -1,7 +1,22 @@
+import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+class LockStatus:
+    """Whether a delivery still owns its inbox lock. Once lost, it stays lost."""
+
+    def __init__(self) -> None:
+        self._lost = threading.Event()
+
+    @property
+    def lost(self) -> bool:
+        return self._lost.is_set()
+
+    def mark_lost(self) -> None:
+        self._lost.set()
 
 
 @dataclass(frozen=True)
@@ -16,6 +31,11 @@ class ConsumeContext:
     attempt: int
     envelope: dict
     raw: dict
+    lock_status: LockStatus = field(default_factory=LockStatus, repr=False, compare=False)
+
+    @property
+    def lock_lost(self) -> bool:
+        return self.lock_status.lost
 
     @classmethod
     def from_message(cls, envelope: dict, raw: dict) -> "ConsumeContext":

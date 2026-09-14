@@ -25,3 +25,9 @@ def test_plan_failure_dead_letters_at_max():
     update = dispatch.plan_failure(attempt=9, max_attempts=10, now=NOW, error="boom")
     assert update["$set"]["Status"] == "Dead"
     assert update["$set"]["Attempt"] == 10
+
+
+def test_lock_is_renewed_three_times_per_lock_window():
+    assert dispatch.renewal_interval_seconds(120) == 40
+    assert dispatch.renewal_interval_seconds(3) == 1
+    assert dispatch.renewal_interval_seconds(10) == 10 / 3

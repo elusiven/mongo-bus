@@ -9,6 +9,7 @@ from pymongo.collection import ReturnDocument
 from .. import constants, context, dispatch, envelope, queries
 from ..claimcheck import core as claimcheck_core
 from ..errors import ClaimCheckNotSupportedError
+from .renewal import LockRenewer
 
 
 @dataclass
@@ -18,6 +19,13 @@ class Consumer:
     handler: Callable
     max_attempts: int
     idempotent: bool
+    lock_seconds: int = constants.DEFAULT_LOCK_SECONDS
+
+    def __post_init__(self) -> None:
+        if type(self.lock_seconds) is not int or self.lock_seconds < constants.MIN_LOCK_SECONDS:
+            raise ValueError(
+                f"lock_seconds must be an int >= {constants.MIN_LOCK_SECONDS}, got {self.lock_seconds!r}"
+            )
 
 
 def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
@@ -25,7 +33,7 @@ def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
     pump_id = dispatch.build_pump_id(consumer.endpoint_id)
     doc = inbox.find_one_and_update(
         queries.lock_filter(endpoint_id=consumer.endpoint_id, now=now, type_ids=[consumer.type_id]),
-        queries.lock_update(now=now, lock_seconds=constants.DEFAULT_LOCK_SECONDS, pump_id=pump_id),
+        queries.lock_update(now=now, lock_seconds=consumer.lock_seconds, pump_id=pump_id),
         sort=[("VisibleUtc", ASCENDING)],
         return_document=ReturnDocument.AFTER,
     )
@@ -44,10 +52,11 @@ def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
             blob = claimcheck_core.gzip_decompress(blob, max_bytes=claim_check.max_decompressed_bytes)
         env = {**env, "data": json.loads(blob)}
     ctx = context.ConsumeContext.from_message(env, doc)
+    still_owned = queries.owned_message_filter(message_id=doc["_id"], pump_id=pump_id)
 
     if consumer.idempotent and _already_processed(inbox, ctx, doc["_id"]):
         inbox.update_one(
-            {"_id": doc["_id"]},
+            still_owned,
             queries.processed_update(
                 now=datetime.now(timezone.utc),
                 last_error="Skipped due to idempotency",
@@ -56,11 +65,17 @@ def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
         return True
 
     try:
-        with context.use_context(ctx):
+        with context.use_context(ctx), LockRenewer(
+            inbox,
+            message_id=doc["_id"],
+            pump_id=pump_id,
+            lock_seconds=consumer.lock_seconds,
+            lock_status=ctx.lock_status,
+        ):
             consumer.handler(ctx)
     except Exception as exc:  # noqa: BLE001 - failure is mapped to retry/dead-letter
         inbox.update_one(
-            {"_id": doc["_id"]},
+            still_owned,
             dispatch.plan_failure(
                 attempt=doc["Attempt"],
                 max_attempts=consumer.max_attempts,
@@ -71,7 +86,7 @@ def process_one(inbox, consumer: Consumer, claim_check=None) -> bool:
         return True
 
     inbox.update_one(
-        {"_id": doc["_id"]},
+        still_owned,
         queries.processed_update(now=datetime.now(timezone.utc)),
     )
     return True

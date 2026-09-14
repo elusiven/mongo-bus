@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from datetime import timedelta
 
 import pytest
@@ -11,6 +12,7 @@ from mongobus import MongoBus
 from mongobus.claimcheck.config import ClaimCheckConfig
 from mongobus.claimcheck.gridfs import GridFsClaimCheckProvider
 from mongobus.errors import ClaimCheckNotSupportedError
+from tests.support import utc_now_naive, wait_until
 
 
 @pytest.fixture(scope="module")
@@ -449,3 +451,123 @@ def test_claim_check_without_provider_raises(db):
 
     with pytest.raises(ClaimCheckNotSupportedError):
         consumer_bus.run_once("ep")
+
+
+def test_consumer_locks_for_sixty_seconds_by_default(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested")
+    def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    assert bus.run_once("ep") is True
+
+    assert timedelta(seconds=50) < lock_windows[0] <= timedelta(seconds=60)
+
+
+def test_consumer_locks_for_its_configured_lock_seconds(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    lock_windows = []
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=120)
+    def handle(ctx):
+        lock_windows.append(ctx.raw["LockedUntilUtc"] - utc_now_naive())
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    assert bus.run_once("ep") is True
+
+    assert timedelta(seconds=110) < lock_windows[0] <= timedelta(seconds=120)
+
+
+def test_consumer_registration_rejects_lock_seconds_below_three(db):
+    client, name = db
+    bus = MongoBus(uri="", database=name, client=client)
+
+    with pytest.raises(ValueError, match="lock_seconds must be an int >= 3"):
+
+        @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=2)
+        def handle(ctx):  # pragma: no cover - registration fails first
+            pass
+
+
+def test_lock_is_renewed_while_a_long_handler_runs(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = MongoBus(uri="", database=name, client=client)
+    competing_bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    observed = {}
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3)
+    def handle(ctx):
+        time.sleep(4.5)  # outlives the original 3 s lock; only renewal keeps the message ours
+        observed["competitor_took_message"] = competing_bus.run_once("ep")
+        current = inbox.find_one({"_id": ctx.raw["_id"]})
+        observed["lock_still_ours"] = current["LockOwner"] == ctx.raw["LockOwner"]
+        observed["locked_until_in_future"] = current["LockedUntilUtc"] > utc_now_naive()
+        observed["lock_lost"] = ctx.lock_lost
+
+    @competing_bus.consumer(endpoint_id="ep", type_id="SongRequested")
+    def compete(ctx):  # pragma: no cover - must never receive the locked message
+        pass
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    assert bus.run_once("ep") is True
+
+    assert observed == {
+        "competitor_took_message": False,
+        "lock_still_ours": True,
+        "locked_until_in_future": True,
+        "lock_lost": False,
+    }
+    assert inbox.find_one({})["Status"] == "Processed"
+
+
+def test_handler_learns_its_lock_was_lost_and_its_success_is_discarded(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+    observed = {}
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3)
+    def handle(ctx):
+        inbox.update_one({"_id": ctx.raw["_id"]}, {"$set": {"LockOwner": "another-pump"}})
+        observed["lock_lost"] = wait_until(lambda: ctx.lock_lost, timeout_seconds=5)
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    bus.run_once("ep")
+
+    doc = inbox.find_one({})
+    assert observed["lock_lost"] is True
+    assert doc["Status"] == "Pending"
+    assert doc["LockOwner"] == "another-pump"
+    assert doc["Attempt"] == 0
+
+
+def test_failure_of_a_handler_that_lost_its_lock_is_discarded(db):
+    client, name = db
+    inbox = client[name]["bus_inbox"]
+    bus = MongoBus(uri="", database=name, client=client)
+    bus.bind("SongRequested", endpoint_id="ep")
+
+    @bus.consumer(endpoint_id="ep", type_id="SongRequested", lock_seconds=3, max_attempts=1)
+    def handle(ctx):
+        inbox.update_one({"_id": ctx.raw["_id"]}, {"$set": {"LockOwner": "another-pump"}})
+        wait_until(lambda: ctx.lock_lost, timeout_seconds=5)
+        raise RuntimeError("stale worker failed")
+
+    bus.publish("SongRequested", {"songId": "s-1"})
+    bus.run_once("ep")
+
+    doc = inbox.find_one({})
+    assert doc["Status"] == "Pending"
+    assert doc["LockOwner"] == "another-pump"
+    assert doc["Attempt"] == 0
+    assert doc["LastError"] != "stale worker failed"
