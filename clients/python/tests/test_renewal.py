@@ -2,7 +2,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
-from pymongo.errors import PyMongoError
+from pymongo.errors import InvalidOperation, PyMongoError
 
 from mongobus import queries
 from mongobus._async.renewal import AsyncLockRenewer
@@ -18,6 +18,17 @@ class _UpdateResult:
         self.matched_count = matched_count
 
 
+class _UnacknowledgedUpdateResult:
+    """Mimics pymongo's UpdateResult for an unacknowledged write: matched_count raises."""
+
+    @property
+    def matched_count(self):
+        raise InvalidOperation("A value for matched_count is not available when the write is unacknowledged.")
+
+
+UNACKNOWLEDGED = object()
+
+
 class _ScriptedInbox:
     """Answers update_one with the scripted outcomes in order, then keeps matching one document."""
 
@@ -30,6 +41,8 @@ class _ScriptedInbox:
         outcome = self._outcomes.pop(0) if self._outcomes else 1
         if isinstance(outcome, Exception):
             raise outcome
+        if outcome is UNACKNOWLEDGED:
+            return _UnacknowledgedUpdateResult()
         return _UpdateResult(outcome)
 
     def update_one(self, filter_, update):
@@ -63,6 +76,13 @@ def test_renew_once_marks_the_lock_lost_when_no_document_matches():
 
 def test_renew_once_keeps_the_lock_state_on_a_driver_error():
     inbox, status = _ScriptedInbox(PyMongoError("network blip")), LockStatus()
+
+    assert _renewer(inbox, status).renew_once() is True
+    assert status.lost is False
+
+
+def test_renew_once_keeps_the_lock_state_when_matched_count_is_unavailable():
+    inbox, status = _ScriptedInbox(UNACKNOWLEDGED), LockStatus()
 
     assert _renewer(inbox, status).renew_once() is True
     assert status.lost is False
@@ -123,6 +143,13 @@ async def test_async_renew_once_marks_the_lock_lost_when_no_document_matches():
 
 async def test_async_renew_once_keeps_the_lock_state_on_a_driver_error():
     inbox, status = _AsyncScriptedInbox(PyMongoError("network blip")), LockStatus()
+
+    assert await _async_renewer(inbox, status).renew_once() is True
+    assert status.lost is False
+
+
+async def test_async_renew_once_keeps_the_lock_state_when_matched_count_is_unavailable():
+    inbox, status = _AsyncScriptedInbox(UNACKNOWLEDGED), LockStatus()
 
     assert await _async_renewer(inbox, status).renew_once() is True
     assert status.lost is False

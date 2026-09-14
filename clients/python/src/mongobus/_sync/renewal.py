@@ -35,9 +35,10 @@ class LockRenewer:
                 queries.renew_lock_filter(message_id=self._message_id, pump_id=self._pump_id),
                 queries.renew_lock_update(now=datetime.now(timezone.utc), lock_seconds=self._lock_seconds),
             )
+            matched = result.matched_count
         except PyMongoError:
             return True  # transient driver error: the lock may still be ours, try again next interval
-        if result.matched_count == 0:
+        if matched == 0:
             self._lock_status.mark_lost()
             return False
         return True
