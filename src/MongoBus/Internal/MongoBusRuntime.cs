@@ -20,6 +20,7 @@ internal sealed class MongoBusRuntime : BackgroundService
     private readonly IMessagePump _pump;
     private readonly ILogger<MongoBusRuntime> _log;
     private readonly IReadOnlyList<IConsumerDefinition> _definitions;
+    private readonly MessageLockRenewer _lockRenewer;
 
     public MongoBusRuntime(
         IMongoDatabase db,
@@ -37,6 +38,7 @@ internal sealed class MongoBusRuntime : BackgroundService
         _pump = pump;
         _log = log;
         _definitions = definitions.ToList();
+        _lockRenewer = new MessageLockRenewer(_inbox, log);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -302,13 +304,34 @@ internal sealed class MongoBusRuntime : BackgroundService
                     if (shouldSkip) continue;
                 }
 
-                await _dispatcher.DispatchAsync(msg, ctx, ct);
+                await DispatchAsync(cfg, msg, ctx, ct);
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "Unexpected error in WorkerLoop for endpoint {Endpoint}", cfg.EndpointId);
             }
         }
+    }
+
+    private async Task DispatchAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)
+    {
+        if (!cfg.RenewLock)
+        {
+            await _dispatcher.DispatchAsync(msg, ctx, ct);
+            return;
+        }
+
+        await using var lease = await _lockRenewer.TryAcquireLeaseAsync(msg, cfg.LockTime, ct);
+        if (lease is null)
+        {
+            _log.LogInformation(
+                "Message {MessageId} on endpoint {Endpoint} was re-locked while waiting to be dispatched; skipping this copy.",
+                msg.Id, cfg.EndpointId);
+            return;
+        }
+
+        using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LockLost);
+        await _dispatcher.DispatchAsync(msg, ctx, dispatchCancellation.Token);
     }
 
     /// <summary>

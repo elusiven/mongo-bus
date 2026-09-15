@@ -113,8 +113,8 @@ def generate(ctx):
 - **Async handlers must await.** `AsyncMongoBus` renews on an asyncio task, which only runs
   while the handler awaits. Offload blocking work with `await asyncio.to_thread(...)`, or use
   the synchronous `MongoBus`, which renews on a background thread.
-- **.NET parity:** .NET consumers set a fixed `LockTime` and do not renew; keep their
-  `LockTime` above the longest handler.
+- **.NET parity:** .NET consumers renew their lock only when their definition sets
+  `RenewLock` (MongoBus 3.1.0 and later); otherwise keep their `LockTime` above the longest handler.
 
 ## Idempotency default
 

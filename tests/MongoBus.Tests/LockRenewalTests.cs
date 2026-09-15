@@ -102,6 +102,169 @@ public class LockRenewalTests(MongoDbFixture fixture)
         SlowPlainHandler.Starts.Should().BeLessThanOrEqualTo(5);
     }
 
+    public sealed class LongMessage { }
+
+    public sealed class LongHandler : IMessageHandler<LongMessage>
+    {
+        public static int Starts;
+        public static int Ends;
+
+        public async Task HandleAsync(LongMessage message, ConsumeContext context, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Starts);
+            await Task.Delay(TimeSpan.FromSeconds(7), ct);
+            Interlocked.Increment(ref Ends);
+        }
+    }
+
+    public sealed class LongDefinition : ConsumerDefinition<LongHandler, LongMessage>
+    {
+        public override string TypeId => "renewal.long";
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override bool RenewLock => true;
+    }
+
+    [Fact]
+    public async Task HandlerOutlivingLockTime_RunsOnce_AcrossCompetingConsumers()
+    {
+        Interlocked.Exchange(ref LongHandler.Starts, 0);
+        Interlocked.Exchange(ref LongHandler.Ends, 0);
+        var databaseName = NewDatabaseName();
+        Action<IServiceCollection> registerConsumer =
+            services => services.AddMongoBusConsumer<LongHandler, LongMessage, LongDefinition>();
+        await using var first = await StartBusAsync(databaseName, registerConsumer);
+        await using var second = await StartBusAsync(databaseName, registerConsumer);
+
+        await PublisherOf(first).PublishAsync("renewal.long", new LongMessage(), "test-source");
+        await WaitUntilAsync(() => Task.FromResult(LongHandler.Ends >= 1), TimeSpan.FromSeconds(20));
+        await Task.Delay(TimeSpan.FromSeconds(4));
+
+        LongHandler.Starts.Should().Be(1);
+        (await InboxOf(first).Find(x => x.TypeId == "renewal.long").SingleAsync()).Status.Should().Be(InboxStatus.Processed);
+    }
+
+    public sealed class StolenMessage { }
+
+    public sealed class StolenHandler : IMessageHandler<StolenMessage>
+    {
+        public static TaskCompletionSource Started = NewSignal();
+        public static TaskCompletionSource Cancelled = NewSignal();
+
+        public static void Reset()
+        {
+            Started = NewSignal();
+            Cancelled = NewSignal();
+        }
+
+        public async Task HandleAsync(StolenMessage message, ConsumeContext context, CancellationToken ct)
+        {
+            Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled.TrySetResult();
+                throw;
+            }
+        }
+    }
+
+    public sealed class StolenDefinition : ConsumerDefinition<StolenHandler, StolenMessage>
+    {
+        public override string TypeId => "renewal.stolen";
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override bool RenewLock => true;
+    }
+
+    [Fact]
+    public async Task RenewingHandler_IsCancelled_WhenAnotherConsumerTakesItsLock()
+    {
+        StolenHandler.Reset();
+        await using var bus = await StartBusAsync(
+            NewDatabaseName(),
+            services => services.AddMongoBusConsumer<StolenHandler, StolenMessage, StolenDefinition>());
+
+        await PublisherOf(bus).PublishAsync("renewal.stolen", new StolenMessage(), "test-source");
+        await StolenHandler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var message = await InboxOf(bus).Find(x => x.TypeId == "renewal.stolen").SingleAsync();
+        await InboxLocks.TakeLockAsync(InboxOf(bus), message.Id);
+
+        await StolenHandler.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+
+        var stored = await InboxOf(bus).Find(x => x.Id == message.Id).SingleAsync();
+        stored.LockOwner.Should().Be(InboxLocks.OtherOwner);
+        stored.Status.Should().Be(InboxStatus.Pending);
+        stored.Attempt.Should().Be(message.Attempt);
+    }
+
+    public sealed class BacklogMessage
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public sealed class BacklogHandler : IMessageHandler<BacklogMessage>
+    {
+        public static ConcurrentQueue<string> Handled = new();
+        public static TaskCompletionSource ReleaseBlockers = NewSignal();
+
+        public static void Reset()
+        {
+            Handled = new ConcurrentQueue<string>();
+            ReleaseBlockers = NewSignal();
+        }
+
+        public async Task HandleAsync(BacklogMessage message, ConsumeContext context, CancellationToken ct)
+        {
+            Handled.Enqueue(message.Name);
+            if (message.Name.StartsWith("blocker", StringComparison.Ordinal))
+                await ReleaseBlockers.Task.WaitAsync(ct);
+        }
+    }
+
+    public sealed class BacklogDefinition : ConsumerDefinition<BacklogHandler, BacklogMessage>
+    {
+        public override string TypeId => "renewal.backlog";
+        public override int ConcurrencyLimit => 2;
+        public override int PrefetchCount => 2;
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override bool RenewLock => true;
+    }
+
+    [Fact]
+    public async Task WaitingMessageRelockedByItsOwnEndpoint_IsHandledOnce()
+    {
+        BacklogHandler.Reset();
+        await using var bus = await StartBusAsync(
+            NewDatabaseName(),
+            services => services.AddMongoBusConsumer<BacklogHandler, BacklogMessage, BacklogDefinition>());
+        var inbox = InboxOf(bus);
+
+        await PublisherOf(bus).PublishAsync("renewal.backlog", new BacklogMessage { Name = "blocker-1" }, "test-source");
+        await PublisherOf(bus).PublishAsync("renewal.backlog", new BacklogMessage { Name = "blocker-2" }, "test-source");
+        await WaitUntilAsync(() => Task.FromResult(BacklogHandler.Handled.Count == 2), TimeSpan.FromSeconds(10));
+        var blockerIds = await inbox.Find(x => x.TypeId == "renewal.backlog").Project(x => x.Id).ToListAsync();
+
+        await PublisherOf(bus).PublishAsync("renewal.backlog", new BacklogMessage { Name = "waiting" }, "test-source");
+        InboxMessage? firstLock = null;
+        await WaitUntilAsync(
+            async () => (firstLock = await inbox.Find(x => !blockerIds.Contains(x.Id) && x.LockOwner != null).FirstOrDefaultAsync()) != null,
+            TimeSpan.FromSeconds(10));
+        var waitingId = firstLock!.Id;
+        var firstOwner = firstLock.LockOwner;
+        await WaitUntilAsync(
+            async () => await inbox.CountDocumentsAsync(x => x.Id == waitingId && x.LockOwner != firstOwner) == 1,
+            TimeSpan.FromSeconds(10));
+
+        BacklogHandler.ReleaseBlockers.TrySetResult();
+        await WaitUntilAsync(() => Task.FromResult(BacklogHandler.Handled.Contains("waiting")), TimeSpan.FromSeconds(15));
+        await Task.Delay(TimeSpan.FromSeconds(4));
+
+        BacklogHandler.Handled.Count(name => name == "waiting").Should().Be(1);
+    }
+
     private Task<RunningBus> StartBusAsync(string databaseName, Action<IServiceCollection> registerConsumer) =>
         RunningBus.StartAsync(fixture.ConnectionString, options => options.DatabaseName = databaseName, registerConsumer);
 
