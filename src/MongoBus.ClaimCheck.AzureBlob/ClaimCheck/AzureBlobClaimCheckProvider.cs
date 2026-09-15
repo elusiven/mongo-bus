@@ -1,3 +1,4 @@
+using System.Globalization;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using MongoBus.Abstractions;
@@ -9,6 +10,12 @@ namespace MongoBus.ClaimCheck;
 
 public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
 {
+    // Azure only accepts metadata names that are valid C# identifiers, so the hyphenated MongoBus
+    // metadata keys are stored with underscores and translated back when blobs are listed.
+    private static readonly IReadOnlyDictionary<string, string> MetadataKeysByBlobMetadataName =
+        new[] { ClaimCheckConstants.CreatedAtMetadataKey, ClaimCheckConstants.CompressionMetadataKey }
+            .ToDictionary(ToBlobMetadataName, key => key, StringComparer.OrdinalIgnoreCase);
+
     private readonly BlobContainerClient _container;
     private readonly AzureBlobClaimCheckOptions _options;
 
@@ -33,7 +40,7 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
         };
 
         if (request.Metadata is not null)
-            uploadOptions.Metadata = request.Metadata.ToDictionary(k => k.Key, v => v.Value);
+            uploadOptions.Metadata = request.Metadata.ToDictionary(entry => ToBlobMetadataName(entry.Key), entry => entry.Value);
 
         await blob.UploadAsync(request.Data, uploadOptions, ct);
 
@@ -58,18 +65,7 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
     {
         await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, prefix: null, cancellationToken: ct))
         {
-            DateTime? createdAt = item.Properties.CreatedOn?.UtcDateTime;
-            var metadata = item.Metadata;
-            if (metadata != null && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey.Replace("-", ""), out var caStr) && DateTime.TryParse(caStr, out var ca))
-            {
-                // Azure blob metadata keys are alphanumeric and case-insensitive, often stripped of hyphens by some tools,
-                // but usually preserved if set via SDK. Let's be careful.
-                createdAt = ca;
-            }
-            else if (metadata != null && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey, out var caStr2) && DateTime.TryParse(caStr2, out var ca2))
-            {
-                createdAt = ca2;
-            }
+            var metadata = item.Metadata?.ToDictionary(entry => FromBlobMetadataName(entry.Key), entry => entry.Value);
 
             yield return new ClaimCheckReference(
                 Provider: Name,
@@ -77,10 +73,21 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
                 Key: item.Name,
                 Length: item.Properties.ContentLength ?? 0,
                 ContentType: item.Properties.ContentType,
-                Metadata: metadata?.ToDictionary(k => k.Key, v => v.Value),
-                CreatedAt: createdAt);
+                Metadata: metadata,
+                CreatedAt: CreatedAtFrom(metadata) ?? item.Properties.CreatedOn?.UtcDateTime);
         }
     }
+
+    private static string ToBlobMetadataName(string key) => key.Replace('-', '_');
+
+    private static string FromBlobMetadataName(string name) => MetadataKeysByBlobMetadataName.GetValueOrDefault(name, name);
+
+    private static DateTime? CreatedAtFrom(IReadOnlyDictionary<string, string>? metadata) =>
+        metadata is not null
+        && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey, out var value)
+        && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var createdAt)
+            ? createdAt
+            : null;
 
     private string BuildKey()
     {
