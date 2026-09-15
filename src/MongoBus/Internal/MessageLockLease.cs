@@ -14,9 +14,9 @@ internal sealed class MessageLockLease : IAsyncDisposable
     private readonly Task _renewing;
 
     private MessageLockLease(
-        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log, CancellationToken ct)
+        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log)
     {
-        _stopRenewing = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _stopRenewing = new CancellationTokenSource();
         GiveUpBeforeExpiry(claimedAt, lockTime);
         _renewing = RenewUntilStoppedAsync(renewer, message, lockTime, log, _stopRenewing.Token);
     }
@@ -25,9 +25,13 @@ internal sealed class MessageLockLease : IAsyncDisposable
     public CancellationToken LockLost => _lockLost.Token;
 
     /// <param name="claimedAt">When the claim that confirmed the lock was sent; the first deadline counts from here.</param>
+    /// <remarks>
+    /// Renewal is not tied to the worker's stopping token: a handler still finishing while the bus stops must keep its
+    /// lock until its dispatch returns and the lease is disposed, or another consumer could start the same message.
+    /// </remarks>
     public static MessageLockLease StartRenewing(
-        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log, CancellationToken ct) =>
-        new(renewer, message, lockTime, claimedAt, log, ct);
+        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log) =>
+        new(renewer, message, lockTime, claimedAt, log);
 
     /// <summary>
     /// Schedules <see cref="LockLost"/> a sixth of the lock time before the confirmed expiry. It fires whether or not a

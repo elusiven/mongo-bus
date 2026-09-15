@@ -86,7 +86,7 @@ public class OrderCreatedDefinition : ConsumerDefinition<OrderCreatedHandler, Or
 
 #### Long-running handlers
 
-A handler that can outlive `LockTime` sets `RenewLock => true` (with a `LockTime` of at least one second). The lock is then extended every third of `LockTime` for as long as the handler runs, so no other consumer picks the message up, and if the consumer crashes the message is redelivered once the lock lapses. If the lock is lost — another consumer took the message, or renewals did not succeed before the lock neared expiry — the handler's `CancellationToken` is cancelled and the message is released for redelivery. Batch consumers do not renew locks.
+A handler that can outlive `LockTime` sets `RenewLock => true` (with a `LockTime` of at least one second). The lock is then extended every third of `LockTime` for as long as the handler runs — including while the bus is stopping — so no other consumer picks the message up, and if the consumer crashes the message is redelivered once the lock lapses. If the lock is lost — another consumer took the message, or renewals did not succeed before the lock neared expiry — the handler's `CancellationToken` is cancelled; stop promptly, because the message may already be running elsewhere. `RenewLock` applies to every consumer on the same endpoint. Batch consumers do not renew locks.
 
 ### Batch Consumers
 

@@ -28,7 +28,7 @@ internal sealed class MessageLockRenewer(IMongoCollection<InboxMessage> inbox, I
     {
         var claimedAt = DateTime.UtcNow;
         return await TryExtendAsync(message, lockTime, ct)
-            ? MessageLockLease.StartRenewing(this, message, lockTime, claimedAt, log, ct)
+            ? MessageLockLease.StartRenewing(this, message, lockTime, claimedAt, log)
             : null;
     }
 }

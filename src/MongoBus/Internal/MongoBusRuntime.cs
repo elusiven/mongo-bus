@@ -304,7 +304,10 @@ internal sealed class MongoBusRuntime : BackgroundService
                     if (shouldSkip) continue;
                 }
 
-                await DispatchAsync(cfg, msg, ctx, ct);
+                if (cfg.RenewLock)
+                    await DispatchUnderLeaseAsync(cfg, msg, ctx, ct);
+                else
+                    await _dispatcher.DispatchAsync(msg, ctx, ct);
             }
             catch (Exception ex)
             {
@@ -313,14 +316,8 @@ internal sealed class MongoBusRuntime : BackgroundService
         }
     }
 
-    private async Task DispatchAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)
+    private async Task DispatchUnderLeaseAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)
     {
-        if (!cfg.RenewLock)
-        {
-            await _dispatcher.DispatchAsync(msg, ctx, ct);
-            return;
-        }
-
         await using var lease = await _lockRenewer.TryAcquireLeaseAsync(msg, cfg.LockTime, ct);
         if (lease is null)
         {

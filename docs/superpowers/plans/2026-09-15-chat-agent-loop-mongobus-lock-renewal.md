@@ -1293,3 +1293,447 @@ Not applied:
 - **Assert that `OnMessageFailed` is not raised when a renewing handler's lock is taken.** Registering a consume observer in `RunningBus` adds setup this plan does not otherwise need; the unchanged `Attempt` already shows the failure path was not taken.
 
 Plan review is capped at two passes (`/jira-task` Phase 3); these pass-2 revisions go to implementation without a third plan review and are re-checked by the Phase 5 deep reviews.
+
+## Review fixes
+
+Phase 5 deep reviews over `origin/main...3d1eefd`: run A (lens correctness) and run B (lens design), both "Acceptable with concerns — changes requested", no Critical or High findings. Both confirmed that consumers without `RenewLock` are unchanged from `main`. Merged list (duplicates keep the higher severity), each finding checked against the code before a decision:
+
+| # | Severity | Finding | Source | Decision |
+|---|---|---|---|---|
+| M1 | Medium | Renewal stops when the host begins stopping, not when the lease is disposed: `MessageLockLease.cs:19` links `_stopRenewing` to the worker token passed at `MessageLockRenewer.cs:31`. A handler still finishing during a rolling deploy can let its lock lapse and the job run twice. | A1, B1 | Accepted — Fix 1 |
+| M2 | Medium | The lock-taken cancellation tests (`MessageLockRenewerTests` lease test, `LockRenewalTests` runtime test) wait 5 s against a watchdog at 2.5 s, so they pass without the owner-mismatch branch (`MessageLockLease.cs:62-66`). | A2, B2 | Accepted — Fix 2 |
+| M3 | Medium | A watchdog cancellation logs no Warning; operators see only the dispatcher's Information "Stopped while handling message…" line, identical to a normal shutdown. The "Could not renew" warning also omits `EndpointId`. | A3, B triage | Accepted — Fix 3 |
+| M4 | Low | The crash-redelivery test's `Task.Delay(4 s)` lines up with the fourth renewal, leaving a millisecond margin. | B3 | Accepted — Fix 2 |
+| M5 | Low | `README.md` says a lost lock releases the message for redelivery (false when another consumer took it), and neither the README nor the `RenewLock` XML doc says the flag applies to every consumer on the endpoint. | A5, B4, B5 | Accepted — Fix 1 (documentation steps) |
+| M6 | Low | The private `DispatchAsync(cfg, …)` shares its name with the dispatcher's and hides the re-claim and skip. | B6 | Accepted — Fix 1 |
+| M7 | Low | `MessageLockRenewer` builds `MessageLockLease`, which calls back into the renewer; the renewer carries a logger only to pass it on. | B7 | Follow-up (not this PR): behaviour-neutral restructuring; the fix wave stays on correctness. |
+| M8 | Low | `MessageLockLease.DisposeAsync` awaits a renewal write the driver does not abort on cancellation, so a hung write holds the worker after the outcome is recorded. | A4 | Follow-up (not this PR): the outcome and the watchdog are unaffected, `InboxOutcomeWriter` has the same exposure, and the reviewer recommends a follow-up. |
+
+Deferred per-task minors, triaged by both reviews:
+- Folded into the fixes above: T4 lock-taken test through the watchdog (M2), T4 pump test delay (M4), T4 warning without `EndpointId` (M3), T5 renewal at shutdown (M1), T5 README wording (M5), T5 method name (M6).
+- Moot: T1 and T2 doc comments written ahead of later tasks (all tasks ship in one PR); T4 "no test that the caller's token stops renewal" (M1 removes that coupling).
+- Not needed before merge: T1 validator rejecting a hand-written batch definition with `RenewLock` and `LockTime` < 1 s; T2 `Starts <= 5` bound; T3 null-owner guard (callers are gated on `RenewLock`, owners always non-null); T3 return-value-only assertion; T4 expiry read after failpoint injection; T4 loop delay not waking on `LockLost`; T4 non-idempotent `DisposeAsync`; T5 timing margins (watch the first CI run).
+- Follow-up (not this PR): T4 "Could not renew" logged after cancellation; T5 false "no longer holds the lock" warning in the window after the outcome write.
+- Follow-up (not this PR, prioritise before GenCAD's PR 2 consumers): during every shutdown with a backlog, a renewing endpoint's workers drain messages still buffered in the channel (`ChannelReader.ReadAllAsync` may yield after cancellation) and claim each with the already-cancelled worker token; the claim throws `OperationCanceledException`, `WorkerLoopAsync` logs it at Error as "Unexpected error in WorkerLoop", and the message is neither dispatched nor released, so it is redelivered only after `LockTime`. Non-renewing endpoints dispatch these and release them through #26's path.
+- Follow-up (not this PR): Fix 3's warning runs in a `CancellationToken` callback on the watchdog's timer thread — a logging provider that throws there has no caller to catch it, and callbacks run in reverse registration order, so the dispatcher's "Stopped while handling message…" line can precede the warning.
+
+### Fix 1: The lease renews until it is disposed, not until the bus starts stopping
+
+**Files:**
+- Modify: `src/MongoBus/Internal/MessageLockLease.cs` (constructor, `StartRenewing`)
+- Modify: `src/MongoBus/Internal/MessageLockRenewer.cs` (`TryAcquireLeaseAsync`)
+- Modify: `src/MongoBus/Internal/MongoBusRuntime.cs` (`WorkerLoopAsync` call site, the private `DispatchAsync`)
+- Modify: `src/MongoBus/Abstractions/IConsumerDefinition.cs` (`RenewLock` XML doc)
+- Modify: `README.md` (`#### Long-running handlers` paragraph)
+- Test: `tests/MongoBus.Tests/LockRenewalTests.cs`
+
+**Interfaces:**
+- Produces: `MessageLockLease.StartRenewing(MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log)` (no `CancellationToken`); private `MongoBusRuntime.DispatchUnderLeaseAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)`.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `LockRenewalTests`:
+
+```csharp
+    public sealed class FinishingMessage { }
+
+    public sealed class FinishingHandler : IMessageHandler<FinishingMessage>
+    {
+        public static TaskCompletionSource Started = NewSignal();
+        public static TaskCompletionSource Release = NewSignal();
+
+        public static void Reset()
+        {
+            Started = NewSignal();
+            Release = NewSignal();
+        }
+
+        public async Task HandleAsync(FinishingMessage message, ConsumeContext context, CancellationToken ct)
+        {
+            Started.TrySetResult();
+            await Release.Task;
+        }
+    }
+
+    public sealed class FinishingDefinition : ConsumerDefinition<FinishingHandler, FinishingMessage>
+    {
+        public override string TypeId => "renewal.finishing";
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override bool RenewLock => true;
+    }
+
+    [Fact]
+    public async Task HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns()
+    {
+        FinishingHandler.Reset();
+        var bus = await StartBusAsync(
+            NewDatabaseName(),
+            services => services.AddMongoBusConsumer<FinishingHandler, FinishingMessage, FinishingDefinition>());
+        var inbox = InboxOf(bus);
+        Task? stopping = null;
+        InboxMessage locked;
+        InboxMessage whileStopping;
+        DateTime readAt;
+        try
+        {
+            await PublisherOf(bus).PublishAsync("renewal.finishing", new FinishingMessage(), "test-source");
+            await FinishingHandler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            locked = await inbox.Find(x => x.TypeId == "renewal.finishing").SingleAsync();
+
+            stopping = bus.DisposeAsync().AsTask();
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            readAt = DateTime.UtcNow;
+            whileStopping = await inbox.Find(x => x.Id == locked.Id).SingleAsync();
+        }
+        finally
+        {
+            FinishingHandler.Release.TrySetResult();
+            await (stopping ?? bus.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        whileStopping.LockOwner.Should().Be(locked.LockOwner);
+        whileStopping.LockedUntilUtc.Should().BeAfter(readAt);
+        (await inbox.Find(x => x.Id == locked.Id).SingleAsync()).Status.Should().Be(InboxStatus.Processed);
+    }
+```
+
+(`RunningBus.DisposeAsync` stops the hosted services without disposing the service provider, so `inbox` stays usable after the bus stops.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.LockRenewalTests.HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns"`
+Expected: FAIL — `whileStopping.LockedUntilUtc` is before `readAt`, because renewal stopped when the bus began stopping and the 3-second lock lapsed during the 5-second wait.
+
+- [ ] **Step 3: Write minimal implementation**
+
+`src/MongoBus/Internal/MessageLockLease.cs` — the constructor and `StartRenewing` lose their `CancellationToken`:
+
+```csharp
+    private MessageLockLease(
+        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log)
+    {
+        _stopRenewing = new CancellationTokenSource();
+        GiveUpBeforeExpiry(claimedAt, lockTime);
+        _renewing = RenewUntilStoppedAsync(renewer, message, lockTime, log, _stopRenewing.Token);
+    }
+```
+
+```csharp
+    /// <param name="claimedAt">When the claim that confirmed the lock was sent; the first deadline counts from here.</param>
+    /// <remarks>
+    /// Renewal is not tied to the worker's stopping token: a handler still finishing while the bus stops must keep its
+    /// lock until its dispatch returns and the lease is disposed, or another consumer could start the same message.
+    /// </remarks>
+    public static MessageLockLease StartRenewing(
+        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log) =>
+        new(renewer, message, lockTime, claimedAt, log);
+```
+
+`src/MongoBus/Internal/MessageLockRenewer.cs` — `TryAcquireLeaseAsync` keeps `ct` for the claim only:
+
+```csharp
+    public async Task<MessageLockLease?> TryAcquireLeaseAsync(InboxMessage message, TimeSpan lockTime, CancellationToken ct)
+    {
+        var claimedAt = DateTime.UtcNow;
+        return await TryExtendAsync(message, lockTime, ct)
+            ? MessageLockLease.StartRenewing(this, message, lockTime, claimedAt, log)
+            : null;
+    }
+```
+
+`src/MongoBus/Internal/MongoBusRuntime.cs` — in `WorkerLoopAsync` replace `await DispatchAsync(cfg, msg, ctx, ct);` with:
+
+```csharp
+                if (cfg.RenewLock)
+                    await DispatchUnderLeaseAsync(cfg, msg, ctx, ct);
+                else
+                    await _dispatcher.DispatchAsync(msg, ctx, ct);
+```
+
+and replace the private `DispatchAsync` method with:
+
+```csharp
+    private async Task DispatchUnderLeaseAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)
+    {
+        await using var lease = await _lockRenewer.TryAcquireLeaseAsync(msg, cfg.LockTime, ct);
+        if (lease is null)
+        {
+            _log.LogInformation(
+                "Message {MessageId} on endpoint {Endpoint} was re-locked while waiting to be dispatched; skipping this copy.",
+                msg.Id, cfg.EndpointId);
+            return;
+        }
+
+        using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LockLost);
+        await _dispatcher.DispatchAsync(msg, ctx, dispatchCancellation.Token);
+    }
+```
+
+`src/MongoBus/Abstractions/IConsumerDefinition.cs` — the `RenewLock` XML doc becomes:
+
+```csharp
+    /// <summary>
+    /// When true, the lock on a message is extended for as long as its handler runs, and the handler's
+    /// cancellation token is cancelled if the lock is lost. Applies to every single-message consumer on the same
+    /// endpoint; batch consumers do not renew. Requires a <see cref="LockTime"/> of at least one second.
+    /// </summary>
+```
+
+`README.md` — replace the `#### Long-running handlers` paragraph with:
+
+```markdown
+A handler that can outlive `LockTime` sets `RenewLock => true` (with a `LockTime` of at least one second). The lock is then extended every third of `LockTime` for as long as the handler runs — including while the bus is stopping — so no other consumer picks the message up, and if the consumer crashes the message is redelivered once the lock lapses. If the lock is lost — another consumer took the message, or renewals did not succeed before the lock neared expiry — the handler's `CancellationToken` is cancelled; stop promptly, because the message may already be running elsewhere. `RenewLock` applies to every consumer on the same endpoint. Batch consumers do not renew locks.
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.LockRenewalTests|FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests|FullyQualifiedName~MongoBus.Tests.ConsumerStateWriteTests"`
+Expected: PASS (LockRenewalTests 6, MessageLockRenewerTests 10, ConsumerStateWriteTests unchanged).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/MongoBus/Internal/MessageLockLease.cs src/MongoBus/Internal/MessageLockRenewer.cs src/MongoBus/Internal/MongoBusRuntime.cs src/MongoBus/Abstractions/IConsumerDefinition.cs README.md tests/MongoBus.Tests/LockRenewalTests.cs
+git commit -m "chat-agent-loop: keep renewing a lock until the dispatch returns, also while the bus stops"
+```
+
+### Fix 2: Lock-taken tests fail without the lock-taken branch; crash test off the renewal beat
+
+**Files:**
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs` (`Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock`, `MessageWhoseRenewalStoppedWithoutARelease_IsLockableByAnotherPumpOnlyAfterItsLockLapses`)
+- Test: `tests/MongoBus.Tests/LockRenewalTests.cs` (`StolenDefinition`)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Tighten the tests**
+
+In `MessageLockRenewerTests`, `Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock` becomes (renewal at 3 s detects the taken lock; the watchdog would only fire at 7.5 s, after the 5-second wait):
+
+```csharp
+    [Fact]
+    public async Task Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var lockTime = TimeSpan.FromSeconds(9);
+        var message = await InsertLockedAsync(inbox, lockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+
+        signalled.Should().BeTrue();
+        (await ReloadAsync(inbox, message)).LockOwner.Should().Be(InboxLocks.OtherOwner);
+    }
+```
+
+In `MessageWhoseRenewalStoppedWithoutARelease_IsLockableByAnotherPumpOnlyAfterItsLockLapses`, stop depending on when renewals happen: read the expiry the stopped lease left behind and wait until just after it. The lines from `var lease = …` to `var afterLapse = …` become:
+
+```csharp
+        var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        await lease!.DisposeAsync();
+        var storedExpiry = (await ReloadAsync(inbox, message)).LockedUntilUtc!.Value;
+
+        var beforeLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
+        await Task.Delay(storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250));
+        var afterLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
+```
+
+(If renewal wrongly continued after disposal, the stored expiry would keep moving and `afterLapse` would still be null.)
+
+In `LockRenewalTests`, `StolenDefinition.LockTime` becomes `TimeSpan.FromSeconds(9)` (the test's 5-second wait for `Cancelled` then only passes through the lock-taken branch).
+
+- [ ] **Step 2: Prove the tests now fail without the lock-taken branch**
+
+Temporarily delete `await _lockLost.CancelAsync();` from the owner-mismatch branch in `src/MongoBus/Internal/MessageLockLease.cs` (keep the `return;`).
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock|FullyQualifiedName~MongoBus.Tests.LockRenewalTests.RenewingHandler_IsCancelled_WhenAnotherConsumerTakesItsLock"`
+Expected: FAIL, both tests (`signalled` is false; `Cancelled` wait throws `TimeoutException`).
+Restore the deleted line (`git diff src/MongoBus/Internal/MessageLockLease.cs` must be empty).
+
+- [ ] **Step 3: Run the tightened tests to verify they pass**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests|FullyQualifiedName~MongoBus.Tests.LockRenewalTests"`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/MongoBus.Tests/MessageLockRenewerTests.cs tests/MongoBus.Tests/LockRenewalTests.cs
+git commit -m "chat-agent-loop: make the lock-taken tests fail without the lock-taken branch"
+```
+
+### Fix 3: The lease warns when it gives up before the lock expires
+
+**Files:**
+- Modify: `src/MongoBus/Internal/MessageLockLease.cs`
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs`
+
+**Interfaces:** none new.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `MessageLockRenewerTests` add `using System.Collections.Concurrent;` and `using Microsoft.Extensions.Logging;`, then add:
+
+```csharp
+    [Fact]
+    public async Task Lease_WarnsThatItGaveUp_WhenRenewalsKeepFailing()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+        var log = new RecordingLogger();
+
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        log.Warnings.Should().ContainSingle(warning => warning.Contains("neared expiry") && warning.Contains(message.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var lockTime = TimeSpan.FromSeconds(9);
+        var message = await InsertLockedAsync(inbox, lockTime);
+        var log = new RecordingLogger();
+
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+
+        public IEnumerable<string> Warnings =>
+            _entries.Where(entry => entry.Level == LogLevel.Warning).Select(entry => entry.Message);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            _entries.Enqueue((logLevel, formatter(state, exception)));
+    }
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_Warns"`
+Expected: `Lease_WarnsThatItGaveUp_WhenRenewalsKeepFailing` FAILS (no warning contains "neared expiry"; only "Could not renew" warnings are logged). `Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt` PASSES — it guards against the watchdog warning also being logged on a lock-taken event, and Step 5 proves it can fail.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `src/MongoBus/Internal/MessageLockLease.cs` add the fields:
+
+```csharp
+    private readonly CancellationTokenRegistration _givingUpReport;
+    private volatile bool _lockTakenReported;
+```
+
+register the report in the constructor before the watchdog is armed, so the constructor becomes:
+
+```csharp
+    private MessageLockLease(
+        MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log)
+    {
+        _stopRenewing = new CancellationTokenSource();
+        _givingUpReport = _lockLost.Token.Register(() => ReportGivingUp(message, log));
+        GiveUpBeforeExpiry(claimedAt, lockTime);
+        _renewing = RenewUntilStoppedAsync(renewer, message, lockTime, log, _stopRenewing.Token);
+    }
+```
+
+and dispose the registration first in `DisposeAsync`, so a watchdog that fires while disposal waits on an in-flight renewal does not report a dispatch that already returned:
+
+```csharp
+    public async ValueTask DisposeAsync()
+    {
+        await _givingUpReport.DisposeAsync();
+        await _stopRenewing.CancelAsync();
+        await _renewing;
+        _stopRenewing.Dispose();
+        _lockLost.Dispose();
+    }
+```
+
+and the method:
+
+```csharp
+    /// <summary>
+    /// Runs when <see cref="LockLost"/> is cancelled. The lock-taken branch logs its own warning; any other cancellation
+    /// comes from the watchdog, and without this warning it would look like an ordinary shutdown in the logs.
+    /// </summary>
+    private void ReportGivingUp(InboxMessage message, ILogger log)
+    {
+        if (_lockTakenReported)
+            return;
+
+        log.LogWarning(
+            "The lock on message {MessageId} on endpoint {EndpointId} could not be renewed before it neared expiry; cancelling its dispatch.",
+            message.Id, message.EndpointId);
+    }
+```
+
+In the owner-mismatch branch of `RenewUntilStoppedAsync`, set the flag before logging:
+
+```csharp
+                _lockTakenReported = true;
+                log.LogWarning(
+                    "Delivery no longer holds the lock on message {MessageId} on endpoint {EndpointId}; cancelling its dispatch.",
+                    message.Id, message.EndpointId);
+                await _lockLost.CancelAsync();
+                return;
+```
+
+and in the general `catch (Exception ex)` add the endpoint:
+
+```csharp
+                log.LogWarning(
+                    ex,
+                    "Could not renew the lock on message {MessageId} on endpoint {EndpointId}; its dispatch is cancelled if the lock nears expiry first.",
+                    message.Id, message.EndpointId);
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests|FullyQualifiedName~MongoBus.Tests.LockRenewalTests"`
+Expected: PASS (MessageLockRenewerTests 12, LockRenewalTests 6).
+
+- [ ] **Step 5: Prove the lock-taken warning guard can fail**
+
+Temporarily delete `if (_lockTakenReported) return;` from `ReportGivingUp`.
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt"`
+Expected: FAIL — two warnings ("no longer holds the lock" and "could not be renewed before it neared expiry").
+Restore the deleted lines and re-run the Step 4 command: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/MongoBus/Internal/MessageLockLease.cs tests/MongoBus.Tests/MessageLockRenewerTests.cs
+git commit -m "chat-agent-loop: warn when a lock lease gives up before the lock expires"
+```
+
+After the three fixes: rebase onto the current `origin/main` (it now carries PR #51, the `ConcurrencyTests` rewrite), re-run every command under Global Constraints "Verification commands" and record the results under `## Verification`.
+
+### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
+
+Decisions and Fixes 1-2 confirmed sound against the code; no rejected or deferred item blocks 3.1.0. Applied:
+- [Medium] Fix 3's double-logging guard could not fail (`ContainSingle(predicate)` tolerates a second warning): it now asserts `ContainSingle()` over all warnings with a 9-second lock, and Step 5 proves it fails without the `_lockTakenReported` check; the other test is renamed `Lease_WarnsThatItGaveUp_WhenRenewalsKeepFailing` because it also logs "Could not renew" warnings.
+- [Low] Fix 3's callback registration was discarded: it is kept in `_givingUpReport`, registered before the watchdog is armed and disposed first in `DisposeAsync`.
+- [Low] The crash-redelivery test still depended on renewal timing: it now waits until the stored `LockedUntilUtc` instead of a fixed delay.
+- [Low] The deferred pre-dispatch claim exception was described as a fault case: the follow-up now names the shutdown-drain trigger and its effects.
+- Test hygiene: Fix 1's test releases the handler and stops the bus in `finally` for every failure after the bus starts.
+
+Not applied:
+- A narrow try/catch around the callback's `LogWarning` and the callback ordering relative to the dispatcher's log: recorded as a follow-up; no other logging call in the library is guarded, and the change would be the only swallowed exception in the lease.
+- Replacing the 200 ms waits in Fix 3's tests with polling (optional in the review): the callback runs synchronously during cancellation, so 200 ms only absorbs continuation scheduling.
+- A test that a disposed lease never reports giving up: disposing the registration first is a two-line change whose failure mode needs a hung renewal to reproduce; left to the correctness review of the fix commits.

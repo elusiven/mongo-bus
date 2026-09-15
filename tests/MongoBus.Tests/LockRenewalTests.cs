@@ -265,6 +265,67 @@ public class LockRenewalTests(MongoDbFixture fixture)
         BacklogHandler.Handled.Count(name => name == "waiting").Should().Be(1);
     }
 
+    public sealed class FinishingMessage { }
+
+    public sealed class FinishingHandler : IMessageHandler<FinishingMessage>
+    {
+        public static TaskCompletionSource Started = NewSignal();
+        public static TaskCompletionSource Release = NewSignal();
+
+        public static void Reset()
+        {
+            Started = NewSignal();
+            Release = NewSignal();
+        }
+
+        public async Task HandleAsync(FinishingMessage message, ConsumeContext context, CancellationToken ct)
+        {
+            Started.TrySetResult();
+            await Release.Task;
+        }
+    }
+
+    public sealed class FinishingDefinition : ConsumerDefinition<FinishingHandler, FinishingMessage>
+    {
+        public override string TypeId => "renewal.finishing";
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override bool RenewLock => true;
+    }
+
+    [Fact]
+    public async Task HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns()
+    {
+        FinishingHandler.Reset();
+        var bus = await StartBusAsync(
+            NewDatabaseName(),
+            services => services.AddMongoBusConsumer<FinishingHandler, FinishingMessage, FinishingDefinition>());
+        var inbox = InboxOf(bus);
+        Task? stopping = null;
+        InboxMessage locked;
+        InboxMessage whileStopping;
+        DateTime readAt;
+        try
+        {
+            await PublisherOf(bus).PublishAsync("renewal.finishing", new FinishingMessage(), "test-source");
+            await FinishingHandler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            locked = await inbox.Find(x => x.TypeId == "renewal.finishing").SingleAsync();
+
+            stopping = bus.DisposeAsync().AsTask();
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            readAt = DateTime.UtcNow;
+            whileStopping = await inbox.Find(x => x.Id == locked.Id).SingleAsync();
+        }
+        finally
+        {
+            FinishingHandler.Release.TrySetResult();
+            await (stopping ?? bus.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+
+        whileStopping.LockOwner.Should().Be(locked.LockOwner);
+        whileStopping.LockedUntilUtc.Should().BeAfter(readAt);
+        (await inbox.Find(x => x.Id == locked.Id).SingleAsync()).Status.Should().Be(InboxStatus.Processed);
+    }
+
     private Task<RunningBus> StartBusAsync(string databaseName, Action<IServiceCollection> registerConsumer) =>
         RunningBus.StartAsync(fixture.ConnectionString, options => options.DatabaseName = databaseName, registerConsumer);
 
