@@ -251,11 +251,13 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             var flagsProp = typeof(TInstance).GetProperty(composite.FlagsPropertyName);
             if (flagsProp == null) continue;
 
-            var currentFlags = (int)flagsProp.GetValue(instance)!;
-            currentFlags |= (1 << bitIndex);
+            var previousFlags = (int)flagsProp.GetValue(instance)!;
+            var currentFlags = previousFlags | (1 << bitIndex);
             flagsProp.SetValue(instance, currentFlags);
 
-            if (currentFlags == composite.RequiredBitmask)
+            var becameSatisfied = previousFlags != composite.RequiredBitmask
+                && currentFlags == composite.RequiredBitmask;
+            if (becameSatisfied)
             {
                 var compositeBehavior = stateMachine.GetCompositeBehavior(composite.EventName);
                 if (compositeBehavior != null)
