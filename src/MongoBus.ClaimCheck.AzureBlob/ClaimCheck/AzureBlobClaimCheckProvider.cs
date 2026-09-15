@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -18,11 +19,13 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
 
     private readonly BlobContainerClient _container;
     private readonly AzureBlobClaimCheckOptions _options;
+    private readonly string? _blobPrefix;
 
     public AzureBlobClaimCheckProvider(AzureBlobClaimCheckOptions options)
     {
         _options = options;
         _container = new BlobContainerClient(options.ConnectionString, options.ContainerName);
+        _blobPrefix = string.IsNullOrWhiteSpace(options.BlobPrefix) ? null : options.BlobPrefix.TrimEnd('/') + "/";
     }
 
     public string Name => "azure";
@@ -63,9 +66,11 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
 
     public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, prefix: null, cancellationToken: ct))
+        await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, prefix: _blobPrefix, cancellationToken: ct))
         {
             var metadata = item.Metadata?.ToDictionary(entry => FromBlobMetadataName(entry.Key), entry => entry.Value);
+            if (!IsStoredByMongoBus(metadata))
+                continue;
 
             yield return new ClaimCheckReference(
                 Provider: Name,
@@ -82,16 +87,14 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
 
     private static string FromBlobMetadataName(string name) => MetadataKeysByBlobMetadataName.GetValueOrDefault(name, name);
 
-    private static DateTime? CreatedAtFrom(IReadOnlyDictionary<string, string>? metadata) =>
-        metadata is not null
-        && metadata.TryGetValue(ClaimCheckConstants.CreatedAtMetadataKey, out var value)
-        && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var createdAt)
+    // The container may hold blobs other applications wrote; MongoBus marks every payload it stores with its creation time.
+    private static bool IsStoredByMongoBus([NotNullWhen(true)] IReadOnlyDictionary<string, string>? metadata) =>
+        metadata is not null && metadata.ContainsKey(ClaimCheckConstants.CreatedAtMetadataKey);
+
+    private static DateTime? CreatedAtFrom(IReadOnlyDictionary<string, string> metadata) =>
+        DateTime.TryParse(metadata[ClaimCheckConstants.CreatedAtMetadataKey], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var createdAt)
             ? createdAt
             : null;
 
-    private string BuildKey()
-    {
-        var prefix = string.IsNullOrWhiteSpace(_options.BlobPrefix) ? "" : _options.BlobPrefix!.TrimEnd('/') + "/";
-        return $"{prefix}{Guid.NewGuid():N}";
-    }
+    private string BuildKey() => $"{_blobPrefix}{Guid.NewGuid():N}";
 }

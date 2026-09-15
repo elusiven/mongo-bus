@@ -111,6 +111,30 @@ public class S3ClaimCheckProviderTests(MinioFixture minio) : IClassFixture<Minio
         listed.Should().HaveCount(objectCount);
     }
 
+    [Fact]
+    public async Task ListAsync_WithKeyPrefix_ShouldSkipObjectsUnderASiblingPrefix()
+    {
+        var provider = await CreateProviderWithEmptyBucketAsync(options => options.KeyPrefix = "claims");
+        var stored = await provider.PutAsync(WriteRequest("payload"), CancellationToken.None);
+        await minio.PutObjectAsync(stored.Container, $"claims-archive/{Guid.NewGuid():N}", "archived payload");
+
+        var listed = await ListReferencesAsync(provider);
+
+        listed.Select(x => x.Key).Should().Equal(stored.Key);
+    }
+
+    [Fact]
+    public async Task ListAsync_ShouldSkipObjectsNotNamedLikeClaimChecks()
+    {
+        var provider = await CreateProviderWithEmptyBucketAsync();
+        var stored = await provider.PutAsync(WriteRequest("payload"), CancellationToken.None);
+        await minio.PutObjectAsync(stored.Container, "reports/2026-09.csv", "month,total");
+
+        var listed = await ListReferencesAsync(provider);
+
+        listed.Select(x => x.Key).Should().Equal(stored.Key);
+    }
+
     private async Task<S3ClaimCheckProvider> CreateProviderWithEmptyBucketAsync(Action<S3ClaimCheckOptions>? customize = null)
     {
         var bucketName = "claim-checks-" + Guid.NewGuid().ToString("N");

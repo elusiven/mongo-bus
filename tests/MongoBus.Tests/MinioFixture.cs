@@ -1,4 +1,6 @@
+using Amazon.Runtime;
 using Amazon.S3;
+using Amazon.S3.Model;
 using Testcontainers.Minio;
 using Xunit;
 
@@ -39,10 +41,18 @@ public class MinioFixture : IAsyncLifetime
         return response.Metadata[metadataName];
     }
 
+    public async Task PutObjectAsync(string bucketName, string key, string content)
+    {
+        using var client = CreateClient();
+        await client.PutObjectAsync(new PutObjectRequest { BucketName = bucketName, Key = key, ContentBody = content });
+    }
+
     private AmazonS3Client CreateClient() =>
         new(AccessKey, SecretKey, new AmazonS3Config
         {
             ServiceURL = ServiceUrl,
-            ForcePathStyle = true
+            ForcePathStyle = true,
+            RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+            ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED
         });
 }
