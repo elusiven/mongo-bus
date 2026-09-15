@@ -1,4 +1,3 @@
-using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using MongoBus.Abstractions;
@@ -16,14 +15,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     public S3ClaimCheckProvider(S3ClaimCheckOptions options)
     {
         _options = options;
-        var config = new AmazonS3Config
-        {
-            ServiceURL = options.ServiceUrl,
-            ForcePathStyle = options.ForcePathStyle,
-            RegionEndpoint = string.IsNullOrWhiteSpace(options.Region) ? null : RegionEndpoint.GetBySystemName(options.Region)
-        };
-
-        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, config);
+        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, S3ClientConfiguration.Create(options));
     }
 
     public string Name => _options.ProviderName;
@@ -31,6 +23,8 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     public async Task<ClaimCheckReference> PutAsync(ClaimCheckWriteRequest request, CancellationToken ct)
     {
         var key = BuildKey();
+        // Measured before uploading because the SDK closes the input stream once the upload completes.
+        var length = request.Length ?? (request.Data.CanSeek ? request.Data.Length : 0);
 
         var put = new PutObjectRequest
         {
@@ -48,7 +42,6 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
 
         await _client.PutObjectAsync(put, ct);
 
-        var length = request.Length ?? (request.Data.CanSeek ? request.Data.Length : 0);
         return new ClaimCheckReference(Name, _options.BucketName, key, length, request.ContentType, request.Metadata);
     }
 
@@ -78,22 +71,19 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
         do
         {
             response = await _client.ListObjectsV2Async(request, ct);
-            foreach (var s3Object in response.S3Objects)
+            foreach (var s3Object in response.S3Objects ?? [])
             {
-                // To get metadata, we'd need to call GetObjectMetadata for each object.
-                // S3 ListObjects doesn't return user-defined metadata.
-                // However, we have LastModified from the list result.
-
+                // ListObjectsV2 returns no user metadata; fetching it would cost one request per object.
                 yield return new ClaimCheckReference(
                     Provider: Name,
                     Container: _options.BucketName,
                     Key: s3Object.Key,
-                    Length: s3Object.Size,
-                    CreatedAt: s3Object.LastModified.ToUniversalTime());
+                    Length: s3Object.Size ?? 0,
+                    CreatedAt: s3Object.LastModified?.ToUniversalTime());
             }
 
             request.ContinuationToken = response.NextContinuationToken;
-        } while (response.IsTruncated);
+        } while (response.IsTruncated == true);
     }
 
     private string BuildKey()
