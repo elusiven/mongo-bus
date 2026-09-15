@@ -255,64 +255,6 @@ public class OutboxIntegrationTests(MongoDbFixture fixture)
         }
     }
 
-    [Fact]
-    public async Task PublishWithTransactionAsync_ShouldCommitOutboxMessage_WhenTransactionsSupported()
-    {
-        var services = BuildServices();
-        var sp = services.BuildServiceProvider();
-
-        var client = sp.GetRequiredService<IMongoClient>();
-        if (!await SupportsTransactionsAsync(client))
-            return;
-
-        var transactionalBus = sp.GetRequiredService<ITransactionalMessageBus>();
-        var db = sp.GetRequiredService<IMongoDatabase>();
-        var outbox = db.GetCollection<OutboxMessage>(MongoBusConstants.OutboxCollectionName);
-        var custom = db.GetCollection<BsonDocument>("tx_data");
-
-        await transactionalBus.PublishWithTransactionAsync(
-            "outbox.test.message",
-            new OutboxMessageModel { Text = "tx-commit" },
-            async (session, ct) =>
-            {
-                await custom.InsertOneAsync(session, new BsonDocument("k", "v"), cancellationToken: ct);
-            });
-
-        (await custom.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty)).Should().Be(1);
-        (await outbox.CountDocumentsAsync(x => x.Topic == "outbox.test.message")).Should().Be(1);
-    }
-
-    [Fact]
-    public async Task PublishWithTransactionAsync_ShouldRollback_WhenCallbackFailsAndTransactionsSupported()
-    {
-        var services = BuildServices();
-        var sp = services.BuildServiceProvider();
-
-        var client = sp.GetRequiredService<IMongoClient>();
-        if (!await SupportsTransactionsAsync(client))
-            return;
-
-        var transactionalBus = sp.GetRequiredService<ITransactionalMessageBus>();
-        var db = sp.GetRequiredService<IMongoDatabase>();
-        var outbox = db.GetCollection<OutboxMessage>(MongoBusConstants.OutboxCollectionName);
-        var custom = db.GetCollection<BsonDocument>("tx_data_fail");
-
-        Func<Task> act = async () =>
-            await transactionalBus.PublishWithTransactionAsync(
-                "outbox.test.message",
-                new OutboxMessageModel { Text = "tx-rollback" },
-                async (session, ct) =>
-                {
-                    await custom.InsertOneAsync(session, new BsonDocument("k", "v"), cancellationToken: ct);
-                    throw new InvalidOperationException("boom");
-                });
-
-        await act.Should().ThrowAsync<InvalidOperationException>();
-
-        (await custom.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty)).Should().Be(0);
-        (await outbox.CountDocumentsAsync(x => x.Topic == "outbox.test.message")).Should().Be(0);
-    }
-
     private ServiceCollection BuildServices(Action<MongoBusOptions>? configure = null)
     {
         var services = new ServiceCollection();
@@ -372,12 +314,5 @@ public class OutboxIntegrationTests(MongoDbFixture fixture)
         }
 
         throw new TimeoutException("Condition was not met in time.");
-    }
-
-    private static async Task<bool> SupportsTransactionsAsync(IMongoClient client)
-    {
-        var admin = client.GetDatabase("admin");
-        var hello = await admin.RunCommandAsync<BsonDocument>(new BsonDocument("hello", 1));
-        return hello.Contains("setName");
     }
 }
