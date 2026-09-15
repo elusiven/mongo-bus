@@ -50,10 +50,11 @@ public static class SagaRegistrationExtensions
             return new MongoSagaRepository<TInstance>(collection);
         });
 
-        if (options.DefaultPartitionCount > 0)
-        {
-            services.AddSingleton(new SagaPartitioner(options.DefaultPartitionCount));
-        }
+        // Owned by this saga rather than registered in DI: a shared SagaPartitioner made unrelated sagas wait on each
+        // other's partitions and applied the last registration's partition count to all of them.
+        var partitioner = options.DefaultPartitionCount > 0
+            ? new SagaPartitioner(options.DefaultPartitionCount)
+            : null;
 
         if (options.HistoryEnabled)
         {
@@ -67,7 +68,7 @@ public static class SagaRegistrationExtensions
             var reg = registration.Value;
             var messageType = reg.MessageType;
 
-            RegisterSagaEventHandler(services, typeof(TStateMachine), typeof(TInstance), messageType, typeId, endpointName, options);
+            RegisterSagaEventHandler(services, typeof(TStateMachine), typeof(TInstance), messageType, typeId, endpointName, options, partitioner);
         }
 
         if (options.SagaTimeout > TimeSpan.Zero)
@@ -95,7 +96,8 @@ public static class SagaRegistrationExtensions
         Type messageType,
         string typeId,
         string endpointName,
-        SagaOptions options)
+        SagaOptions options,
+        SagaPartitioner? partitioner)
     {
         var handlerType = typeof(SagaEventHandler<,>).MakeGenericType(instanceType, messageType);
         var handlerInterface = typeof(IMessageHandler<>).MakeGenericType(messageType);
@@ -106,7 +108,6 @@ public static class SagaRegistrationExtensions
             var repoType = typeof(ISagaRepository<>).MakeGenericType(instanceType);
             var repo = sp.GetRequiredService(repoType);
             var bus = sp.GetRequiredService<IMessageBus>();
-            var partitioner = sp.GetService<SagaPartitioner>();
             var historyWriterType = typeof(SagaHistoryWriter<>).MakeGenericType(instanceType);
             var historyWriter = sp.GetService(historyWriterType);
             var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(handlerType);
