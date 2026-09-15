@@ -50,6 +50,16 @@ internal sealed class SagaIndexesHostedService<TInstance>(
                 new CreateIndexOptions { Name = "ix_current_state" })
         ], ct);
 
+        // Keyed by state first so the timeout scan skips final and timed-out sagas, then reads only those past the cutoff.
+        if (options.SagaTimeout > TimeSpan.Zero)
+        {
+            await collection.Indexes.CreateOneAsync(
+                new CreateIndexModel<TInstance>(
+                    Builders<TInstance>.IndexKeys.Ascending(x => x.CurrentState).Ascending(x => x.CreatedUtc),
+                    new CreateIndexOptions { Name = "ix_current_state_created_utc" }),
+                cancellationToken: ct);
+        }
+
         // The TTL index deletes saga instances, so turning SagaInstanceTtl off must remove it, not just stop creating it.
         if (options.SagaInstanceTtl > TimeSpan.Zero)
             await RetentionIndexes.EnsureNamedAsync(collection, TtlIndexName, nameof(ISagaInstance.LastModifiedUtc), options.SagaInstanceTtl, ct);

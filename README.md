@@ -477,7 +477,7 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
     opt.ConcurrencyLimit = 16;
     opt.HistoryEnabled = true;         // Enable audit log
     opt.HistoryTtl = TimeSpan.FromDays(30);
-    opt.SagaTimeout = TimeSpan.FromHours(24); // Auto-expire after 24h
+    opt.SagaTimeout = TimeSpan.FromHours(24); // Time out sagas created more than 24h ago
     opt.SagaInstanceTtl = TimeSpan.FromDays(7); // TTL cleanup
 });
 ```
@@ -511,7 +511,7 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `IdempotencyEnabled` | false | Deduplicate events by CloudEvent ID |
 | `HistoryEnabled` | false | Record state transitions in an audit log collection |
 | `HistoryTtl` | 30 days | TTL for history entries |
-| `SagaTimeout` | disabled | Auto-transition expired sagas to a timeout state |
+| `SagaTimeout` | disabled | Move sagas created longer ago than this, and not `Final`, to `TimeoutStateName`. Age is measured from `CreatedUtc`, not from the last event |
 | `TimeoutStateName` | "TimedOut" | Target state for timed-out sagas |
 | `TimeoutScanInterval` | 30s | How often the timeout service scans |
 | `SagaInstanceTtl` | disabled | TTL index on saga instances for auto-cleanup |
