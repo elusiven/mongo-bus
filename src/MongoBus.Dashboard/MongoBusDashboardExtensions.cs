@@ -83,7 +83,16 @@ public static class MongoBusDashboardExtensions
 
         var sagaInstancesEndpoint = endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/instances", async (string collection, string? state, int? skip, int? take, IMongoBusMonitoringService monitoring, CancellationToken ct) =>
         {
-            return Results.Ok(await monitoring.GetSagaInstancesAsync(collection, state, skip ?? 0, take ?? 50, ct));
+            if (!SagaInstancePaging.IsValid(skip, take))
+                return Results.BadRequest(SagaInstancePaging.ValidationMessage);
+
+            var instances = await monitoring.GetSagaInstancesAsync(
+                collection,
+                state,
+                skip ?? SagaInstancePaging.DefaultSkip,
+                take ?? SagaInstancePaging.DefaultTake,
+                ct);
+            return Results.Ok(instances.Select(SagaInstanceSummary.From));
         });
 
         var sagaHistoryEndpoint = endpoints.MapGet($"{pattern}/api/sagas/{{collection}}/history/{{correlationId}}", async (string collection, string correlationId, IMongoBusMonitoringService monitoring, CancellationToken ct) =>

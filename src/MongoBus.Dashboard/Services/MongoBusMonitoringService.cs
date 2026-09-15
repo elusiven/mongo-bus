@@ -132,10 +132,20 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
             ? FilterDefinition<BsonDocument>.Empty
             : Builders<BsonDocument>.Filter.Eq("CurrentState", stateFilter);
 
+        // Saga instances can hold any application data; only the fields the dashboard shows leave the database.
+        var summaryFields = Builders<BsonDocument>.Projection
+            .Include("CorrelationId")
+            .Include("CurrentState")
+            .Include("Version")
+            .Include("CreatedUtc")
+            .Include("LastModifiedUtc")
+            .Exclude("_id");
+
         return await collection.Find(filter)
             .SortByDescending(x => x["LastModifiedUtc"])
             .Skip(skip)
             .Limit(take)
+            .Project(summaryFields)
             .ToListAsync(ct);
     }
 
