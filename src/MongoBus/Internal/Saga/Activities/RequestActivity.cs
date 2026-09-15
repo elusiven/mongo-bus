@@ -40,7 +40,7 @@ internal sealed class RequestActivity<TInstance, TMessage, TRequest, TResponse>(
             };
 
             await context.Bus.PublishAsync(
-                request.RequestTypeId + ".timeout",
+                request.TimeoutTypeId,
                 timeoutData,
                 deliverAt: DateTime.UtcNow.Add(request.Timeout),
                 correlationId: context.Saga.CorrelationId,
@@ -84,7 +84,7 @@ internal sealed class RequestAsyncActivity<TInstance, TMessage, TRequest, TRespo
             };
 
             await context.Bus.PublishAsync(
-                request.RequestTypeId + ".timeout",
+                request.TimeoutTypeId,
                 timeoutData,
                 deliverAt: DateTime.UtcNow.Add(request.Timeout),
                 correlationId: context.Saga.CorrelationId,
