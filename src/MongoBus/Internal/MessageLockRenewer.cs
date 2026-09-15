@@ -19,4 +19,16 @@ internal sealed class MessageLockRenewer(IMongoCollection<InboxMessage> inbox, I
 
         return result.MatchedCount == 1;
     }
+
+    /// <summary>
+    /// Re-claims the message and starts renewing its lock, or returns null when the message was re-locked while it
+    /// waited to be dispatched.
+    /// </summary>
+    public async Task<MessageLockLease?> TryAcquireLeaseAsync(InboxMessage message, TimeSpan lockTime, CancellationToken ct)
+    {
+        var claimedAt = DateTime.UtcNow;
+        return await TryExtendAsync(message, lockTime, ct)
+            ? MessageLockLease.StartRenewing(this, message, lockTime, claimedAt, log, ct)
+            : null;
+    }
 }

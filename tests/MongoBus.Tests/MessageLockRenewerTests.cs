@@ -13,6 +13,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 {
     private const string ThisConsumer = "this-consumer";
     private const string EndpointId = "lock-renewer-endpoint";
+    private static readonly TimeSpan LeaseLockTime = TimeSpan.FromSeconds(3);
 
     [Fact]
     public async Task TryExtend_MovesTheLockForward_WhenThisConsumerStillOwnsIt()
@@ -53,6 +54,115 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         extended.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Lease_KeepsTheLockAlive_ForLongerThanLockTime()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromSeconds(7));
+
+        lease.Should().NotBeNull();
+        lease!.LockLost.IsCancellationRequested.Should().BeFalse();
+        (await ReloadAsync(inbox, message)).LockedUntilUtc.Should().BeAfter(DateTime.UtcNow);
+    }
+
+    [Fact]
+    public async Task Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+
+        signalled.Should().BeTrue();
+        (await ReloadAsync(inbox, message)).LockOwner.Should().Be(InboxLocks.OtherOwner);
+    }
+
+    [Fact]
+    public async Task TryAcquireLease_ReturnsNoLease_WhenTheLockIsAlreadyTaken()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var message = await InsertLockedAsync(inbox, TimeSpan.FromSeconds(30));
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+
+        var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, TimeSpan.FromSeconds(30), CancellationToken.None);
+
+        lease.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MessageWhoseRenewalStoppedWithoutARelease_IsLockableByAnotherPumpOnlyAfterItsLockLapses()
+    {
+        var databaseName = NewDatabaseName();
+        var inbox = InboxIn(databaseName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+        var pump = new MongoMessagePump(new MongoClient(fixture.ConnectionString).GetDatabase(databaseName));
+
+        var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        await lease!.DisposeAsync();
+
+        var beforeLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
+        await Task.Delay(LeaseLockTime);
+        var afterLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
+
+        beforeLapse.Should().BeNull();
+        afterLapse.Should().NotBeNull();
+        afterLapse!.Id.Should().Be(message.Id);
+    }
+
+    [Fact]
+    public async Task Lease_KeepsTheLock_WhenOneRenewalFails()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(
+            fixture.ConnectionString, applicationName, new BsonDocument("times", 1));
+        await Task.Delay(TimeSpan.FromSeconds(6));
+
+        lease!.LockLost.IsCancellationRequested.Should().BeFalse();
+        (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc.Should().BeAfter(DateTime.UtcNow);
+    }
+
+    [Fact]
+    public async Task Lease_SignalsLockLostBeforeTheLockExpires_WhenRenewalsKeepFailing()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
+        var expiry = (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc!.Value;
+
+        (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
+    }
+
+    [Fact]
+    public async Task Lease_SignalsLockLostBeforeTheLockExpires_WhenARenewalHangs()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(
+            fixture.ConnectionString, applicationName, "alwaysOn", blockMilliseconds: 10_000);
+        var expiry = (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc!.Value;
+
+        (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
+    }
+
     private static string NewDatabaseName() => "lock_renewer_" + Guid.NewGuid().ToString("N");
 
     private IMongoCollection<InboxMessage> InboxIn(string databaseName, string? applicationName = null) =>
@@ -85,4 +195,69 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 
     private static Task<InboxMessage> ReloadAsync(IMongoCollection<InboxMessage> inbox, InboxMessage message) =>
         inbox.Find(x => x.Id == message.Id).SingleAsync();
+
+    private static string NewApplicationName() => "lock-renewer-" + Guid.NewGuid().ToString("N");
+
+    private static async Task<bool> WaitForCancellationAsync(CancellationToken token, TimeSpan timeout)
+    {
+        try
+        {
+            await Task.Delay(timeout, token);
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>When <paramref name="token"/> was cancelled; throws <see cref="TimeoutException"/> if it was not.</summary>
+    private static async Task<DateTime> CancellationTimeAsync(CancellationToken token, TimeSpan timeout)
+    {
+        var cancelledAt = new TaskCompletionSource<DateTime>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var registration = token.Register(() => cancelledAt.TrySetResult(DateTime.UtcNow));
+        return await cancelledAt.Task.WaitAsync(timeout);
+    }
+
+    /// <summary>
+    /// Makes MongoDB reject update commands from one application until disposed, optionally holding each rejected
+    /// command's connection first. A plain command error is used, as in <c>ConsumerResilienceTests</c>, so the driver
+    /// does not mark the server unknown.
+    /// </summary>
+    private sealed class UpdateFailures(IMongoDatabase admin) : IAsyncDisposable
+    {
+        private const int BadValue = 2;
+
+        public static async Task<UpdateFailures> InjectAsync(
+            string connectionString, string applicationName, BsonValue mode, int? blockMilliseconds = null)
+        {
+            var data = new BsonDocument
+            {
+                ["failCommands"] = new BsonArray { "update" },
+                ["errorCode"] = BadValue,
+                ["appName"] = applicationName
+            };
+            if (blockMilliseconds is { } block)
+            {
+                data["blockConnection"] = true;
+                data["blockTimeMS"] = block;
+            }
+
+            var admin = new MongoClient(connectionString).GetDatabase("admin");
+            await admin.RunCommandAsync<BsonDocument>(new BsonDocument
+            {
+                ["configureFailPoint"] = "failCommand",
+                ["mode"] = mode,
+                ["data"] = data
+            });
+            return new UpdateFailures(admin);
+        }
+
+        public async ValueTask DisposeAsync() =>
+            await admin.RunCommandAsync<BsonDocument>(new BsonDocument
+            {
+                ["configureFailPoint"] = "failCommand",
+                ["mode"] = "off"
+            });
+    }
 }
