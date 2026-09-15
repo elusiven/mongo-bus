@@ -14,10 +14,11 @@ public class MongoDbFixture : IAsyncLifetime
     // MongoDB's TTL monitor wakes every 60 seconds by default, and a changed interval only applies
     // after the current sleep. Waking every second lets tests observe expiry; it only removes
     // documents whose TTL has already elapsed.
+    // Test commands allow the failCommand failpoint, so tests can make MongoDB reject operations.
     public MongoDbContainer Container { get; } = new MongoDbBuilder("mongo:6.0")
         .WithCreateParameterModifier(parameters =>
             parameters.HostConfig.Ulimits = [new Ulimit { Name = "nofile", Soft = OpenFileLimit, Hard = OpenFileLimit }])
-        .WithCommand("--setParameter", "ttlMonitorSleepSecs=1")
+        .WithCommand("--setParameter", "ttlMonitorSleepSecs=1", "--setParameter", "enableTestCommands=1")
         .Build();
 
     public string ConnectionString => Container.GetConnectionString();

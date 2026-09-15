@@ -35,27 +35,40 @@ internal sealed class MongoOutboxRelayService : BackgroundService
         }
 
         var lockOwner = $"{Environment.MachineName}:{Guid.NewGuid():N}:outbox";
+        var backoff = new FailureBackoff();
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            OutboxMessage? message;
             try
             {
-                message = await TryLockOneAsync(lockOwner, stoppingToken);
+                var relayed = await TryRelayNextAsync(lockOwner, stoppingToken);
+                backoff.Reset();
+
+                if (!relayed)
+                    await Task.Delay(_options.Outbox.PollingInterval, stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
-
-            if (message is null)
+            catch (Exception ex)
             {
-                await Task.Delay(_options.Outbox.PollingInterval, stoppingToken);
-                continue;
+                var retryDelay = backoff.NextDelay();
+                _log.LogError(ex, "Outbox relay failed; retrying in {RetryDelay}", retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
             }
-
-            await RelayOneAsync(message, lockOwner, stoppingToken);
         }
+    }
+
+    /// <returns>Whether a message was available to relay.</returns>
+    private async Task<bool> TryRelayNextAsync(string lockOwner, CancellationToken ct)
+    {
+        var message = await TryLockOneAsync(lockOwner, ct);
+        if (message is null)
+            return false;
+
+        await RelayOneAsync(message, lockOwner, ct);
+        return true;
     }
 
     private async Task<OutboxMessage?> TryLockOneAsync(string lockOwner, CancellationToken ct)
