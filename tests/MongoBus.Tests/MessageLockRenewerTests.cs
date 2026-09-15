@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -144,11 +145,12 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var inbox = InboxIn(databaseName, applicationName);
         var message = await InsertLockedAsync(inbox, LeaseLockTime);
 
+        var sinceClaim = Stopwatch.StartNew();
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
-        var expiry = (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc!.Value;
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
 
-        (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
+        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
     }
 
     [Fact]
@@ -159,12 +161,13 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var inbox = InboxIn(databaseName, applicationName);
         var message = await InsertLockedAsync(inbox, LeaseLockTime);
 
+        var sinceClaim = Stopwatch.StartNew();
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(
             fixture.ConnectionString, applicationName, "alwaysOn", blockMilliseconds: 10_000);
-        var expiry = (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc!.Value;
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
 
-        (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
+        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
     }
 
     [Fact]

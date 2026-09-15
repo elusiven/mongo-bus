@@ -1724,6 +1724,68 @@ git commit -m "chat-agent-loop: warn when a lock lease gives up before the lock 
 
 After the three fixes: rebase onto the current `origin/main` (it now carries PR #51, the `ConcurrencyTests` rewrite), re-run every command under Global Constraints "Verification commands" and record the results under `## Verification`.
 
+### Fix 4: The give-up tests measure the watchdog's budget, not a wall-clock timestamp
+
+**Why.** Post-fix verification failed once on `Lease_SignalsLockLostBeforeTheLockExpires_WhenARenewalHangs` ("Expected … to be before <22:41:21.773>, but found <22:41:22.6815325>", MongoBus.Tests 286/287), and a bisect plus instrumentation traced it to this machine's clock rather than to the library:
+
+- A monitor sampling `CLOCK_REALTIME - CLOCK_MONOTONIC` every 5 ms recorded the wall clock stepping forward 1.41-1.81 s about every 33.8 s (`systemd-timesyncd`: 32 s poll, `Offset: +1.707 s`; the WSL2 VM clock runs ~4.7% slow, so each poll steps it).
+- `CancelAfter` counts on the monotonic clock, and both instrumented failures sat exactly on logged steps: in one, a dedicated thread sleeping the same interval woke at monotonic 2501 ms of 2464 ms armed — on time — while the wall clock jumped 1.810 s, putting the observed cancellation 1.318 s past the stored `LockedUntilUtc`.
+- Ruled out with data: callback ordering (the whole chain ran in under 7 ms) and thread-pool starvation (`ThreadCount` 4-5, `PendingWorkItemCount` 0 at every deadline).
+- No commit introduced it: `8d70520` (Task 4) 0 failures in 12 runs, `114ed68` (Fix 1) 0 timing failures in 12, `95ae5ab` 3 in 12 — one rate, since the vulnerable window is about 7% per test (P(0 of 12) ≈ 0.15).
+
+The tests therefore compare a monotonic deadline against a wall-clock timestamp, which a clock step invalidates. What the watchdog promises is a budget: give up before `LockTime - LockTime/6` of the lock's life is spent. Measuring that with a `Stopwatch` (monotonic, like `CancelAfter`) tests the real behaviour and is immune to steps. Production impact of the underlying clock sensitivity is bounded and accepted, see the follow-up entry above: at the 30-60 s lock times GenCAD will use, the margin is 5-10 s and absorbs a 1.8 s step; only the tests' 3 s lock is exposed.
+
+**Files:**
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs` (`Lease_SignalsLockLostBeforeTheLockExpires_WhenRenewalsKeepFailing`, `Lease_SignalsLockLostBeforeTheLockExpires_WhenARenewalHangs`)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Measure the watchdog's budget**
+
+Add `using System.Diagnostics;` to the test file. In both tests, start the stopwatch immediately before acquiring the lease:
+
+```csharp
+        var sinceClaim = Stopwatch.StartNew();
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+```
+
+and replace the two closing statements
+
+```csharp
+        var expiry = (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc!.Value;
+
+        (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
+```
+
+with
+
+```csharp
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+
+        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
+```
+
+(`CancellationTimeAsync` still throws `TimeoutException` if the lease never gives up, so the test keeps asserting that it does.)
+
+- [ ] **Step 2: Prove the assertion still catches a late give-up**
+
+Temporarily change `var deadline = extendedAt.Add(lockTime - lockTime / 6);` in `GiveUpBeforeExpiry` (`src/MongoBus/Internal/MessageLockLease.cs`) to `var deadline = extendedAt.Add(lockTime + lockTime / 6);`.
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_SignalsLockLostBeforeTheLockExpires"`
+Expected: FAIL, both tests — the lease gives up at about 3.5 s, past the 3.0 s budget the assertion allows.
+Restore the line; `git diff src/MongoBus/Internal/MessageLockLease.cs` must be empty.
+
+- [ ] **Step 3: Run the tests to verify they pass across clock steps**
+
+Run the Step 2 command six times in a row (the ~34 s step cadence means several runs will span a step), then `dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests"` once.
+Expected: PASS each time (2 tests, then 12).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2026-09-15-chat-agent-loop-mongobus-lock-renewal.md
+git commit -m "chat-agent-loop: measure the lease give-up against the watchdog budget"
+```
+
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
 
 Decisions and Fixes 1-2 confirmed sound against the code; no rejected or deferred item blocks 3.1.0. Applied:
