@@ -78,7 +78,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         if (instance == null)
         {
             // Check if this event can create a new instance (Initial state)
-            var initialBehavior = stateMachine.GetBehavior<TMessage>(stateMachine.Initial.Name);
+            var initialBehavior = stateMachine.GetBehavior<TMessage>(stateMachine.Initial.Name, registration.TypeId);
             if (initialBehavior == null)
             {
                 await HandleMissingInstanceAsync(registration, context, ct);
@@ -97,7 +97,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         }
 
         // Check if the event is ignored in the current state
-        if (stateMachine.IsIgnored<TMessage>(instance.CurrentState))
+        if (stateMachine.IsIgnored(instance.CurrentState, registration.TypeId))
         {
             logger.LogDebug(
                 "Event '{EventType}' ignored in state '{State}' for saga {CorrelationId}",
@@ -106,7 +106,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         }
 
         // Get behavior for current state
-        var behavior = stateMachine.GetBehavior<TMessage>(instance.CurrentState);
+        var behavior = stateMachine.GetBehavior<TMessage>(instance.CurrentState, registration.TypeId);
         if (behavior == null)
         {
             logger.Log(

@@ -12,12 +12,12 @@ public abstract class MongoBusStateMachine<TInstance>
     public SagaState Initial { get; } = new("Initial");
     public SagaState Final { get; } = new("Final");
 
-    private readonly Dictionary<(string StateName, Type MessageType), object> _behaviors = new();
+    // Keyed by event type ID, not message CLR type: several events can carry the same message type.
+    private readonly Dictionary<(string StateName, string TypeId), object> _behaviors = new();
     private readonly Dictionary<string, SagaEventRegistration> _eventRegistrations = new();
-    private readonly Dictionary<Type, int> _compositeEventBitPositions = new();
     private readonly List<CompositeEventConfig> _compositeEvents = [];
     private readonly Dictionary<string, Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task>> _compositeBehaviors = new();
-    private readonly HashSet<(string StateName, Type MessageType)> _ignoredEvents = [];
+    private readonly HashSet<(string StateName, string TypeId)> _ignoredEvents = [];
     private readonly HashSet<string> _scheduledEventTypeIds = [];
 
     private Func<TInstance, bool>? _completedPredicate;
@@ -80,7 +80,7 @@ public abstract class MongoBusStateMachine<TInstance>
         foreach (var clause in clauses)
         {
             if (clause.IsIgnore)
-                _ignoredEvents.Add((Initial.Name, clause.MessageType));
+                _ignoredEvents.Add((Initial.Name, clause.TypeId));
             else
                 RegisterBehavior(Initial.Name, clause);
         }
@@ -91,7 +91,7 @@ public abstract class MongoBusStateMachine<TInstance>
         foreach (var clause in clauses)
         {
             if (clause.IsIgnore)
-                _ignoredEvents.Add((state.Name, clause.MessageType));
+                _ignoredEvents.Add((state.Name, clause.TypeId));
             else
                 RegisterBehavior(state.Name, clause);
         }
@@ -102,7 +102,7 @@ public abstract class MongoBusStateMachine<TInstance>
         foreach (var clause in clauses)
         {
             if (clause.IsIgnore)
-                _ignoredEvents.Add(("*", clause.MessageType));
+                _ignoredEvents.Add(("*", clause.TypeId));
             else
                 RegisterBehavior("*", clause);
         }
@@ -116,7 +116,7 @@ public abstract class MongoBusStateMachine<TInstance>
 
     protected SagaWhenClause<TInstance> Ignore<TMessage>(SagaEvent<TMessage> @event)
     {
-        return new SagaWhenClause<TInstance>(typeof(TMessage), null, @event.TypeId, isIgnore: true);
+        return new SagaWhenClause<TInstance>(null, @event.TypeId, isIgnore: true);
     }
 
     protected CompositeWhenClause<TInstance> When(SagaEvent @event)
@@ -153,7 +153,6 @@ public abstract class MongoBusStateMachine<TInstance>
             {
                 var typeId = (string)typeIdProp.GetValue(reqEvent)!;
                 config.RequiredEventTypeIds.Add(typeId);
-                _compositeEventBitPositions[reqEvent.GetType()] = bit;
                 bit++;
             }
         }
@@ -176,21 +175,21 @@ public abstract class MongoBusStateMachine<TInstance>
 
     // --- Internal API ---
 
-    internal IReadOnlyList<ISagaActivity<TInstance, TMessage>>? GetBehavior<TMessage>(string currentState)
+    internal IReadOnlyList<ISagaActivity<TInstance, TMessage>>? GetBehavior<TMessage>(string currentState, string typeId)
     {
-        if (_behaviors.TryGetValue((currentState, typeof(TMessage)), out var behavior))
+        if (_behaviors.TryGetValue((currentState, typeId), out var behavior))
             return (IReadOnlyList<ISagaActivity<TInstance, TMessage>>)behavior;
 
-        if (_behaviors.TryGetValue(("*", typeof(TMessage)), out var anyBehavior))
+        if (_behaviors.TryGetValue(("*", typeId), out var anyBehavior))
             return (IReadOnlyList<ISagaActivity<TInstance, TMessage>>)anyBehavior;
 
         return null;
     }
 
-    internal bool IsIgnored<TMessage>(string currentState)
+    internal bool IsIgnored(string currentState, string typeId)
     {
-        return _ignoredEvents.Contains((currentState, typeof(TMessage)))
-            || _ignoredEvents.Contains(("*", typeof(TMessage)));
+        return _ignoredEvents.Contains((currentState, typeId))
+            || _ignoredEvents.Contains(("*", typeId));
     }
 
     internal bool IsScheduledEvent(string typeId) => _scheduledEventTypeIds.Contains(typeId);
@@ -219,7 +218,7 @@ public abstract class MongoBusStateMachine<TInstance>
     {
         var activities = clause.BuildActivities();
         if (activities != null)
-            _behaviors[(stateName, clause.MessageType)] = activities;
+            _behaviors[(stateName, clause.TypeId)] = activities;
 
         _scheduledEventTypeIds.UnionWith(clause.ScheduledTypeIds);
     }
@@ -239,14 +238,12 @@ public abstract class MongoBusStateMachine<TInstance>
 public class SagaWhenClause<TInstance>
     where TInstance : class, ISagaInstance
 {
-    internal Type MessageType { get; }
     internal string TypeId { get; }
     internal bool IsIgnore { get; }
     private readonly object? _builder;
 
-    internal SagaWhenClause(Type messageType, object? builder, string typeId, bool isIgnore = false)
+    internal SagaWhenClause(object? builder, string typeId, bool isIgnore = false)
     {
-        MessageType = messageType;
         TypeId = typeId;
         IsIgnore = isIgnore;
         _builder = builder;
@@ -272,7 +269,7 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
     private readonly BehaviorBuilder<TInstance, TMessage> _builder;
 
     internal SagaWhenClause(BehaviorBuilder<TInstance, TMessage> builder, string typeId)
-        : base(typeof(TMessage), builder, typeId)
+        : base(builder, typeId)
     {
         _builder = builder;
     }
@@ -536,7 +533,7 @@ public sealed class CompositeWhenClause<TInstance>
     {
         clause.Register();
         // Return a no-op clause — actual behavior is stored separately
-        return new SagaWhenClause<TInstance>(typeof(object), null, "__composite__" + clause._eventName);
+        return new SagaWhenClause<TInstance>(null, "__composite__" + clause._eventName);
     }
 }
 
