@@ -14,7 +14,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
 {
     private readonly IServiceProvider _sp;
     private readonly ICloudEventSerializer _serializer;
-    private readonly IMongoCollection<InboxMessage> _inbox;
+    private readonly InboxOutcomeWriter _outcomes;
     private readonly ILogger<MongoBatchMessageDispatcher> _log;
     private readonly IClaimCheckManager _claimCheck;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), BatchDispatchRegistration> _dispatchMap;
@@ -32,7 +32,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     {
         _sp = sp;
         _serializer = serializer;
-        _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
+        _outcomes = new InboxOutcomeWriter(db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName), log);
         _log = log;
         _claimCheck = claimCheck;
         _observers = observers.ToList();
@@ -90,7 +90,12 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                     reg.FlushMode));
             }
 
-            await MarkProcessedAsync(messages, ct);
+            await MarkProcessedAsync(messages);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _log.LogInformation("Stopped while handling a batch of {Count} messages on endpoint {EndpointId}; releasing them for redelivery.", messages.Count, context.EndpointId);
+            await ReleaseLocksAsync(messages);
         }
         catch (Exception ex)
         {
@@ -104,7 +109,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                     reg.FailureMode,
                     ex));
             }
-            await HandleDispatchFailureAsync(messages, context, ex, ct);
+            await HandleDispatchFailureAsync(messages, context, ex);
         }
     }
 
@@ -232,22 +237,19 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         await Next();
     }
 
-    private Task MarkProcessedAsync(IReadOnlyList<InboxMessage> messages, CancellationToken ct)
-    {
-        var ids = messages.Select(m => m.Id).ToArray();
-        var filter = Builders<InboxMessage>.Filter.In(x => x.Id, ids);
+    private Task MarkProcessedAsync(IReadOnlyList<InboxMessage> messages) =>
+        _outcomes.RecordAsync(messages, Builders<InboxMessage>.Update
+            .Set(x => x.Status, InboxStatus.Processed)
+            .Set(x => x.ProcessedUtc, DateTime.UtcNow)
+            .Set(x => x.LockOwner, null)
+            .Set(x => x.LockedUntilUtc, null));
 
-        return _inbox.UpdateManyAsync(
-            filter,
-            Builders<InboxMessage>.Update
-                .Set(x => x.Status, InboxStatus.Processed)
-                .Set(x => x.ProcessedUtc, DateTime.UtcNow)
-                .Set(x => x.LockOwner, null)
-                .Set(x => x.LockedUntilUtc, null),
-            cancellationToken: ct);
-    }
+    private Task ReleaseLocksAsync(IReadOnlyList<InboxMessage> messages) =>
+        _outcomes.RecordAsync(messages, Builders<InboxMessage>.Update
+            .Set(x => x.LockOwner, null)
+            .Set(x => x.LockedUntilUtc, null));
 
-    private async Task HandleDispatchFailureAsync(IReadOnlyList<InboxMessage> messages, BatchConsumeContext context, Exception ex, CancellationToken ct)
+    private async Task HandleDispatchFailureAsync(IReadOnlyList<InboxMessage> messages, BatchConsumeContext context, Exception ex)
     {
         _log.LogError(ex, "Error processing batch for endpoint {EndpointId} ({Count} messages)", context.EndpointId, messages.Count);
 
@@ -256,26 +258,23 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         {
             foreach (var msg in messages)
             {
-                await _inbox.UpdateOneAsync(
-                    x => x.Id == msg.Id,
-                    Builders<InboxMessage>.Update
-                        .Set(x => x.Status, InboxStatus.Dead)
-                        .Set(x => x.Attempt, msg.Attempt + 1)
-                        .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
-                        .Set(x => x.LockOwner, null)
-                        .Set(x => x.LockedUntilUtc, null),
-                    cancellationToken: ct);
+                await _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
+                    .Set(x => x.Status, InboxStatus.Dead)
+                    .Set(x => x.Attempt, msg.Attempt + 1)
+                    .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
+                    .Set(x => x.LockOwner, null)
+                    .Set(x => x.LockedUntilUtc, null));
             }
             return;
         }
 
         foreach (var msg in messages)
         {
-            await HandleRetryAsync(msg, ex, ct);
+            await HandleRetryAsync(msg, ex);
         }
     }
 
-    private async Task HandleRetryAsync(InboxMessage msg, Exception ex, CancellationToken ct)
+    private async Task HandleRetryAsync(InboxMessage msg, Exception ex)
     {
         var nextAttempt = msg.Attempt + 1;
         var maxAttempts = _maxAttemptsMap.GetValueOrDefault(msg.EndpointId, 10);
@@ -283,29 +282,23 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         if (nextAttempt >= maxAttempts)
         {
             _log.LogWarning("Message {MessageId} reached max attempts ({MaxAttempts}) on endpoint {EndpointId}. Moving to Dead.", msg.Id, maxAttempts, msg.EndpointId);
-            await _inbox.UpdateOneAsync(
-                x => x.Id == msg.Id,
-                Builders<InboxMessage>.Update
-                    .Set(x => x.Status, InboxStatus.Dead)
-                    .Set(x => x.Attempt, nextAttempt)
-                    .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
-                    .Set(x => x.LockOwner, null)
-                    .Set(x => x.LockedUntilUtc, null),
-                cancellationToken: ct);
+            await _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
+                .Set(x => x.Status, InboxStatus.Dead)
+                .Set(x => x.Attempt, nextAttempt)
+                .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
+                .Set(x => x.LockOwner, null)
+                .Set(x => x.LockedUntilUtc, null));
             return;
         }
 
         var delay = TimeSpan.FromSeconds(Math.Pow(2, nextAttempt));
-        await _inbox.UpdateOneAsync(
-            x => x.Id == msg.Id,
-            Builders<InboxMessage>.Update
-                .Set(x => x.Attempt, nextAttempt)
-                .Set(x => x.VisibleUtc, DateTime.UtcNow.Add(delay))
-                .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
-                .Set(x => x.Status, InboxStatus.Pending)
-                .Set(x => x.LockOwner, null)
-                .Set(x => x.LockedUntilUtc, null),
-            cancellationToken: ct);
+        await _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
+            .Set(x => x.Attempt, nextAttempt)
+            .Set(x => x.VisibleUtc, DateTime.UtcNow.Add(delay))
+            .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
+            .Set(x => x.Status, InboxStatus.Pending)
+            .Set(x => x.LockOwner, null)
+            .Set(x => x.LockedUntilUtc, null));
     }
 
     private void NotifyBatchProcessed(BatchMetrics metrics)
