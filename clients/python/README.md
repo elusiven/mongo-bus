@@ -29,8 +29,10 @@ bus.ensure_indexes(processed_message_ttl=None)             # lock + dedup only, 
 `ensure_indexes()` mirrors the three inbox indexes the .NET `MongoBusIndexesHostedService`
 creates: the lock index (`EndpointId, Status, VisibleUtc, LockedUntilUtc`), the dedup index
 (`EndpointId, CloudEventId`), and — unless `processed_message_ttl=None` — a TTL/retention
-index on `CreatedUtc` (default 7 days, matching .NET) that **expires inbox documents** after
-the window. It also ensures the unique `(Topic, EndpointId)` binding index.
+index on `ProcessedUtc` (default 7 days, matching .NET) that **expires processed inbox
+documents** after the window. Pending and dead-lettered messages are never expired. It also
+ensures the unique `(Topic, EndpointId)` binding index, and drops the `CreatedUtc` TTL index
+earlier versions created, which expired messages that had not been processed.
 
 **Auto-provisioning:** `run()` and `run_once()` call `ensure_indexes()` once on first start
 if you haven't already, but the implicit path creates only the **lock and dedup** indexes —
@@ -39,10 +41,8 @@ retention behavior. If you run the Python client alongside a .NET MongoBus, that
 already provisions all of these.
 
 > Re-calling `ensure_indexes()` with the **same** TTL is a no-op. Calling it with a
-> **different** `processed_message_ttl` after the `CreatedUtc` index already exists raises
-> `pymongo.errors.OperationFailure` (`IndexOptionsConflict`) — MongoDB will not change a
-> TTL window in place. To change it, drop and recreate the `CreatedUtc` index. The .NET
-> service has the same limitation.
+> **different** `processed_message_ttl` updates the existing index's window in place
+> (`collMod`), as the .NET service does on startup.
 
 ## Claim check (large payloads)
 

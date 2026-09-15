@@ -5,7 +5,6 @@ from datetime import timedelta
 
 import pytest
 from pymongo import MongoClient
-from pymongo.errors import OperationFailure
 from testcontainers.mongodb import MongoDbContainer
 
 from mongobus import MongoBus
@@ -288,7 +287,7 @@ def test_ensure_indexes_creates_inbox_and_binding_indexes(db):
     inbox = _index_key_lists(client[name]["bus_inbox"].index_information())
     assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in inbox
     assert [("EndpointId", 1), ("CloudEventId", 1)] in inbox
-    assert [("CreatedUtc", 1)] in inbox
+    assert [("ProcessedUtc", 1)] in inbox
     assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
 
     bindings = client[name]["bus_bindings"].index_information()
@@ -336,13 +335,26 @@ def test_ensure_indexes_is_idempotent_with_same_ttl(db):
     assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [7 * 24 * 60 * 60]
 
 
-def test_ensure_indexes_with_conflicting_ttl_raises(db):
+def test_ensure_indexes_with_different_ttl_updates_retention_window(db):
     client, name = db
     bus = MongoBus(uri="", database=name, client=client)
 
     bus.ensure_indexes(processed_message_ttl=timedelta(days=7))
-    with pytest.raises(OperationFailure):
-        bus.ensure_indexes(processed_message_ttl=timedelta(days=30))
+    bus.ensure_indexes(processed_message_ttl=timedelta(days=30))
+
+    assert _ttl_seconds(client[name]["bus_inbox"].index_information()) == [30 * 24 * 60 * 60]
+
+
+def test_ensure_indexes_removes_legacy_created_utc_ttl_index(db):
+    client, name = db
+    client[name]["bus_inbox"].create_index([("CreatedUtc", 1)], expireAfterSeconds=7 * 24 * 60 * 60)
+    bus = MongoBus(uri="", database=name, client=client)
+
+    bus.ensure_indexes()
+
+    info = client[name]["bus_inbox"].index_information()
+    ttl_keys = [list(meta["key"]) for meta in info.values() if "expireAfterSeconds" in meta]
+    assert ttl_keys == [[("ProcessedUtc", 1)]]
 
 
 def test_explicit_ensure_indexes_after_auto_path_adds_ttl(db):

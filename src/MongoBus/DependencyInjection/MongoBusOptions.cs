@@ -16,8 +16,9 @@ public sealed class MongoBusOptions
     public Func<string, bool>? UseOutboxForTypeId { get; set; }
 
     /// <summary>
-    /// How long to keep messages in the inbox after they are created.
-    /// This is enforced by a MongoDB TTL index. Defaults to 7 days.
+    /// How long to keep a message in the inbox after it has been processed.
+    /// This is enforced by a MongoDB TTL index on <c>ProcessedUtc</c>, so pending, delayed and
+    /// dead-lettered messages are never expired. Defaults to 7 days.
     /// </summary>
     public TimeSpan ProcessedMessageTtl { get; set; } = TimeSpan.FromDays(7);
 
