@@ -51,11 +51,15 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
 
         using var scope = _sp.CreateScope();
         BatchDispatchRegistration? reg = null;
+        IReadOnlyList<InboxMessage> readableMessages = messages;
         try
         {
             reg = GetRegistration(context.EndpointId, context.TypeId);
 
-            var batchItems = await ResolveBatchItemsAsync(messages, context, reg.MessageClrType, ct);
+            var batchItems = await ResolveReadableItemsAsync(messages, context, reg, ct);
+            readableMessages = batchItems.Select(item => item.Message).ToList();
+            if (readableMessages.Count == 0)
+                return;
 
             var grouped = batchItems.GroupBy(item => reg.GroupingStrategy.GetGroupKey(item.Payload, item.Context));
 
@@ -90,12 +94,12 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                     reg.FlushMode));
             }
 
-            await MarkProcessedAsync(messages);
+            await MarkProcessedAsync(readableMessages);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _log.LogInformation("Stopped while handling a batch of {Count} messages on endpoint {EndpointId}; releasing them for redelivery.", messages.Count, context.EndpointId);
-            await ReleaseLocksAsync(messages);
+            _log.LogInformation("Stopped while handling a batch of {Count} messages on endpoint {EndpointId}; releasing them for redelivery.", readableMessages.Count, context.EndpointId);
+            await ReleaseLocksAsync(readableMessages);
         }
         catch (Exception ex)
         {
@@ -104,12 +108,12 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
                 NotifyBatchFailed(new BatchFailureMetrics(
                     context.EndpointId,
                     context.TypeId,
-                    messages.Count,
+                    readableMessages.Count,
                     DateTime.UtcNow - context.BatchStartedUtc,
                     reg.FailureMode,
                     ex));
             }
-            await HandleDispatchFailureAsync(messages, context, ex);
+            await HandleDispatchFailureAsync(readableMessages, context, ex);
         }
     }
 
@@ -121,26 +125,41 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         return reg;
     }
 
-    private async Task<IReadOnlyList<BatchItem>> ResolveBatchItemsAsync(
+    /// <summary>
+    /// Reads each message's payload. A message that cannot be read, such as one with malformed JSON or a
+    /// missing claim-check object, is recorded as failed on its own and left out of the batch, so it does
+    /// not fail the messages it was batched with.
+    /// </summary>
+    private async Task<IReadOnlyList<BatchItem>> ResolveReadableItemsAsync(
         IReadOnlyList<InboxMessage> messages,
         BatchConsumeContext context,
-        Type messageType,
+        BatchDispatchRegistration reg,
         CancellationToken ct)
     {
         var items = new List<BatchItem>(messages.Count);
         for (var i = 0; i < messages.Count; i++)
         {
             var msg = messages[i];
-            using var doc = _serializer.Parse(msg.PayloadJson);
-            var root = doc.RootElement;
-
-            var (dataEl, dataContentType) = GetDataEnvelope(root);
-            var dataObj = await ResolveDataAsync(dataEl, dataContentType, messageType, ct);
-            var ctx = context.Messages[i];
-            items.Add(new BatchItem(msg, ctx, dataObj));
+            try
+            {
+                var payload = await ResolvePayloadAsync(msg, reg.MessageClrType, ct);
+                items.Add(new BatchItem(msg, context.Messages[i], payload));
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _log.LogError(ex, "Could not read message {MessageId} on endpoint {EndpointId}; recording it as failed and handling the rest of the batch without it.", msg.Id, msg.EndpointId);
+                await RecordFailureAsync([msg], reg, ex);
+            }
         }
 
         return items;
+    }
+
+    private async Task<object> ResolvePayloadAsync(InboxMessage msg, Type messageType, CancellationToken ct)
+    {
+        using var doc = _serializer.Parse(msg.PayloadJson);
+        var (dataEl, dataContentType) = GetDataEnvelope(doc.RootElement);
+        return await ResolveDataAsync(dataEl, dataContentType, messageType, ct);
     }
 
     private static (JsonElement DataElement, string? DataContentType) GetDataEnvelope(JsonElement root)
@@ -253,7 +272,11 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     {
         _log.LogError(ex, "Error processing batch for endpoint {EndpointId} ({Count} messages)", context.EndpointId, messages.Count);
 
-        var reg = GetRegistration(context.EndpointId, context.TypeId);
+        await RecordFailureAsync(messages, GetRegistration(context.EndpointId, context.TypeId), ex);
+    }
+
+    private async Task RecordFailureAsync(IReadOnlyList<InboxMessage> messages, BatchDispatchRegistration reg, Exception ex)
+    {
         if (reg.FailureMode == BatchFailureMode.MarkDead)
         {
             foreach (var msg in messages)

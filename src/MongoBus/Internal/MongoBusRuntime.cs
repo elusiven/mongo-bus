@@ -250,10 +250,7 @@ internal sealed class MongoBusRuntime : BackgroundService
 
             foreach (var msg in messages)
             {
-                using var doc = JsonDocument.Parse(msg.PayloadJson);
-                var root = doc.RootElement;
-
-                var ctx = BuildConsumeContext(msg, root);
+                var ctx = BuildConsumeContext(msg);
 
                 if (cfg.IdempotencyEnabled && !string.IsNullOrEmpty(ctx.CloudEventId))
                 {
@@ -288,11 +285,7 @@ internal sealed class MongoBusRuntime : BackgroundService
         {
             try
             {
-                // Parse CloudEvent basic metadata for the context
-                using var doc = JsonDocument.Parse(msg.PayloadJson);
-                var root = doc.RootElement;
-                
-                var ctx = BuildConsumeContext(msg, root);
+                var ctx = BuildConsumeContext(msg);
 
                 if (cfg.IdempotencyEnabled && !string.IsNullOrEmpty(ctx.CloudEventId))
                 {
@@ -306,6 +299,24 @@ internal sealed class MongoBusRuntime : BackgroundService
             {
                 _log.LogError(ex, "Unexpected error in WorkerLoop for endpoint {Endpoint}", cfg.EndpointId);
             }
+        }
+    }
+
+    /// <summary>
+    /// Builds the consume context from the CloudEvent envelope. When the envelope cannot be read, the context
+    /// falls back to what the inbox document records, so the message still reaches the dispatcher, whose
+    /// failure handling retries and eventually dead-letters it, instead of staying locked and retried forever.
+    /// </summary>
+    private static ConsumeContext BuildConsumeContext(InboxMessage msg)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(msg.PayloadJson);
+            return BuildConsumeContext(msg, doc.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return new ConsumeContext(msg.EndpointId, msg.TypeId, msg.Id, msg.Attempt, null, "", msg.CloudEventId ?? "", msg.CorrelationId, msg.CausationId);
         }
     }
 
