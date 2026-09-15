@@ -15,4 +15,5 @@ public abstract class ConsumerDefinition<TConsumer, TMessage> : IConsumerDefinit
     public virtual TimeSpan LockTime => TimeSpan.FromSeconds(60);
     public virtual int MaxAttempts => 10;
     public virtual bool IdempotencyEnabled => false;
+    public virtual bool RenewLock => false;
 }

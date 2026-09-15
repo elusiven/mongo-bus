@@ -5,6 +5,8 @@ namespace MongoBus.Internal;
 
 internal static class MongoBusConfigValidator
 {
+    private static readonly TimeSpan MinimumRenewedLockTime = TimeSpan.FromSeconds(1);
+
     public static void ValidateOptions(MongoBusOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.ConnectionString))
@@ -64,6 +66,10 @@ internal static class MongoBusConfigValidator
 
         if (def.LockTime <= TimeSpan.Zero)
             throw new InvalidOperationException($"Consumer '{def.ConsumerType.Name}' LockTime must be > 0.");
+
+        if (def.RenewLock && def.LockTime < MinimumRenewedLockTime)
+            throw new InvalidOperationException(
+                $"Consumer '{def.ConsumerType.Name}' LockTime must be at least 1 second when RenewLock is enabled.");
 
         if (def.MaxAttempts < 1)
             throw new InvalidOperationException($"Consumer '{def.ConsumerType.Name}' MaxAttempts must be >= 1.");

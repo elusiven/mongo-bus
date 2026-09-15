@@ -53,6 +53,7 @@ internal static class DispatchRegistrationBuilder
                 LockTime = existing.LockTime > def.LockTime ? existing.LockTime : def.LockTime,
                 MaxAttempts = Math.Max(existing.MaxAttempts, def.MaxAttempts),
                 IdempotencyEnabled = existing.IdempotencyEnabled || def.IdempotencyEnabled,
+                RenewLock = existing.RenewLock || def.RenewLock,
                 TypeIds = MergeTypeIds(existing.TypeIds, def.TypeId)
             };
         }
@@ -110,6 +111,7 @@ internal static class DispatchRegistrationBuilder
             def.LockTime,
             def.MaxAttempts,
             def.IdempotencyEnabled,
+            def.RenewLock,
             new[] { def.TypeId });
 
     private static BatchRuntimeConfig CreateBatchRuntimeConfig(IBatchConsumerDefinition def) =>
