@@ -30,6 +30,7 @@ public static class MongoBusDashboardExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
         services.AddScoped<IMongoBusMonitoringService, MongoBusMonitoringService>();
+        services.AddHostedService<DashboardIndexesHostedService>();
 
         // Register the default authorization policy if the user hasn't overridden or disabled it
         if (options.AuthorizationPolicy == MongoBusDashboardOptions.DefaultPolicyName)
