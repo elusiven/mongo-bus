@@ -307,12 +307,14 @@ builder.Services.AddMongoBusClaimCheckS3(opt =>
 {
     opt.AccessKey = "<access-key>";
     opt.SecretKey = "<secret-key>";
-    opt.ServiceUrl = "https://s3.us-east-1.wasabisys.com"; // or AWS S3 URL
+    opt.ServiceUrl = "https://s3.us-east-1.wasabisys.com"; // omit for AWS S3
     opt.BucketName = "mongobus-claimcheck";
     opt.KeyPrefix = "payloads/";
     opt.Region = "us-east-1";
 });
 ```
+
+AWS S3 is addressed by `Region`; any `ServiceUrl` on an Amazon host is ignored. Other stores are addressed by `ServiceUrl`, with `Region` as the signing region. See the [provider README](src/MongoBus.ClaimCheck.S3/README.md#endpoint-selection) for details.
 
 Or use the Wasabi-specific helper:
 
@@ -322,6 +324,7 @@ builder.Services.AddMongoBusClaimCheckWasabi(opt =>
     opt.AccessKey = "<access-key>";
     opt.SecretKey = "<secret-key>";
     opt.ServiceUrl = "https://s3.us-east-1.wasabisys.com";
+    opt.Region = "us-east-1";
     opt.BucketName = "mongobus-claimcheck";
 });
 ```

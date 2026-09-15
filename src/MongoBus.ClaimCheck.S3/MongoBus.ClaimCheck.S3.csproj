@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="MongoBus.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MongoBus\MongoBus.csproj" />
   </ItemGroup>
 

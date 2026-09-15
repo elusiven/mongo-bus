@@ -1,4 +1,3 @@
-using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using MongoBus.Abstractions;
@@ -16,32 +15,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     public S3ClaimCheckProvider(S3ClaimCheckOptions options)
     {
         _options = options;
-        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, CreateClientConfig(options));
-    }
-
-    private static AmazonS3Config CreateClientConfig(S3ClaimCheckOptions options)
-    {
-        var config = new AmazonS3Config { ForcePathStyle = options.ForcePathStyle };
-
-        // ServiceURL and RegionEndpoint are mutually exclusive: assigning RegionEndpoint (even null)
-        // discards a previously assigned ServiceURL. With a custom endpoint the region is only used for signing.
-        if (!string.IsNullOrWhiteSpace(options.ServiceUrl))
-        {
-            config.ServiceURL = options.ServiceUrl;
-            if (!string.IsNullOrWhiteSpace(options.Region))
-                config.AuthenticationRegion = options.Region;
-
-            // S3-compatible stores do not all support the flexible checksums AWS SDK v4 sends by default
-            // and reject such uploads, so custom endpoints keep the pre-v4 behaviour.
-            config.RequestChecksumCalculation = Amazon.Runtime.RequestChecksumCalculation.WHEN_REQUIRED;
-            config.ResponseChecksumValidation = Amazon.Runtime.ResponseChecksumValidation.WHEN_REQUIRED;
-        }
-        else if (!string.IsNullOrWhiteSpace(options.Region))
-        {
-            config.RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region);
-        }
-
-        return config;
+        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, S3ClientConfiguration.Create(options));
     }
 
     public string Name => _options.ProviderName;
@@ -99,10 +73,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
             response = await _client.ListObjectsV2Async(request, ct);
             foreach (var s3Object in response.S3Objects ?? [])
             {
-                // To get metadata, we'd need to call GetObjectMetadata for each object.
-                // S3 ListObjects doesn't return user-defined metadata.
-                // However, we have LastModified from the list result.
-
+                // ListObjectsV2 returns no user metadata; fetching it would cost one request per object.
                 yield return new ClaimCheckReference(
                     Provider: Name,
                     Container: _options.BucketName,
