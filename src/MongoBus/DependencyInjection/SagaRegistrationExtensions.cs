@@ -100,7 +100,7 @@ public static class SagaRegistrationExtensions
         var handlerType = typeof(SagaEventHandler<,>).MakeGenericType(instanceType, messageType);
         var handlerInterface = typeof(IMessageHandler<>).MakeGenericType(messageType);
 
-        services.AddScoped(handlerInterface, sp =>
+        services.AddScoped(handlerType, sp =>
         {
             var sm = sp.GetRequiredService(stateMachineType);
             var repoType = typeof(ISagaRepository<>).MakeGenericType(instanceType);
@@ -133,7 +133,10 @@ public static class SagaRegistrationExtensions
                 logger)!;
         });
 
-        services.AddScoped(handlerType, sp => sp.GetRequiredService(handlerInterface));
+        // The dispatcher resolves the concrete handler type. The interface is only a forwarder:
+        // several sagas and consumers may handle the same message type, and the last
+        // IMessageHandler<TMessage> registration would otherwise answer for all of them.
+        services.AddScoped(handlerInterface, sp => sp.GetRequiredService(handlerType));
 
         services.AddSingleton<IConsumerDefinition>(new SagaConsumerDefinition(
             typeId, messageType, handlerType, endpointName, options));
