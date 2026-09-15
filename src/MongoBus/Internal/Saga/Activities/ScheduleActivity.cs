@@ -20,9 +20,6 @@ internal sealed class ScheduleActivity<TInstance, TMessage, TTimeout>(
         var deliverAt = DateTime.UtcNow.Add(delay);
         var scheduleId = Guid.NewGuid().ToString("N");
 
-        // Store the schedule token on the instance for potential unschedule
-        SetTokenProperty(context.Saga, scheduleId);
-
         await context.Bus.PublishAsync(
             schedule.TypeId,
             data,
@@ -31,12 +28,6 @@ internal sealed class ScheduleActivity<TInstance, TMessage, TTimeout>(
             causationId: context.Context.CloudEventId,
             id: scheduleId,
             ct: context.CancellationToken);
-    }
-
-    private static void SetTokenProperty(TInstance instance, string token)
-    {
-        // Token property is set via the schedule's token expression at registration time.
-        // The BehaviorBuilder passes a setter action when creating this activity.
     }
 }
 
@@ -71,12 +62,6 @@ internal sealed class ScheduleWithTokenActivity<TInstance, TMessage, TTimeout>(
     }
 }
 
-/// <summary>
-/// Unschedules a previously scheduled timeout by clearing the token.
-/// Since MongoBus uses delayed delivery without cancellation support,
-/// the actual timeout message will still arrive but will be ignored
-/// via state guards in the behavior configuration.
-/// </summary>
 internal sealed class ScheduleAsyncActivity<TInstance, TMessage, TTimeout>(
     SagaSchedule<TInstance, TTimeout> schedule,
     Func<SagaConsumeContext<TInstance, TMessage>, Task<TTimeout>> factory,
@@ -130,6 +115,10 @@ internal sealed class ScheduleWithTokenAsyncActivity<TInstance, TMessage, TTimeo
     }
 }
 
+/// <summary>
+/// Clears a schedule token. Delayed delivery cannot be cancelled, so the scheduled message still arrives;
+/// it is discarded if the saga has completed or its current state does not handle it.
+/// </summary>
 internal sealed class UnscheduleActivity<TInstance, TMessage, TTimeout>(
     Action<TInstance, string?> tokenSetter)
     : ISagaActivity<TInstance, TMessage>

@@ -109,7 +109,8 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         var behavior = stateMachine.GetBehavior<TMessage>(instance.CurrentState);
         if (behavior == null)
         {
-            logger.LogWarning(
+            logger.Log(
+                UnhandledEventLogLevel(registration),
                 "No behavior defined for event '{EventType}' in state '{State}' for saga {CorrelationId}",
                 typeof(TMessage).Name, instance.CurrentState, correlationId);
             return;
@@ -322,15 +323,16 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         CancellationToken ct)
     {
         var behavior = registration.MissingInstanceBehavior;
+        var action = behavior?.Action ?? DefaultMissingInstanceAction(registration);
 
-        if (behavior == null || behavior.Action == MissingInstanceAction.Fault)
+        if (action == MissingInstanceAction.Fault)
         {
             throw new InvalidOperationException(
                 $"No saga instance found for correlation ID and no initial behavior defined " +
                 $"for event '{typeof(TMessage).Name}'.");
         }
 
-        if (behavior.Action == MissingInstanceAction.Discard)
+        if (action == MissingInstanceAction.Discard)
         {
             logger.LogDebug(
                 "Discarding event '{EventType}' - no matching saga instance",
@@ -338,9 +340,16 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             return;
         }
 
-        if (behavior.Action == MissingInstanceAction.Execute && behavior.AsyncHandler != null)
+        if (action == MissingInstanceAction.Execute && behavior?.AsyncHandler != null)
         {
             await behavior.AsyncHandler(context);
         }
     }
+
+    // A saga cannot cancel the delayed messages it scheduled, so they still arrive after it completed or moved on.
+    private MissingInstanceAction DefaultMissingInstanceAction(SagaEventRegistration registration) =>
+        stateMachine.IsScheduledEvent(registration.TypeId) ? MissingInstanceAction.Discard : MissingInstanceAction.Fault;
+
+    private LogLevel UnhandledEventLogLevel(SagaEventRegistration registration) =>
+        stateMachine.IsScheduledEvent(registration.TypeId) ? LogLevel.Debug : LogLevel.Warning;
 }

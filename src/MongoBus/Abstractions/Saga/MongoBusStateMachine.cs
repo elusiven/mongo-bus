@@ -18,6 +18,7 @@ public abstract class MongoBusStateMachine<TInstance>
     private readonly List<CompositeEventConfig> _compositeEvents = [];
     private readonly Dictionary<string, Func<TInstance, IMessageBus, Models.ConsumeContext, CancellationToken, Task>> _compositeBehaviors = new();
     private readonly HashSet<(string StateName, Type MessageType)> _ignoredEvents = [];
+    private readonly HashSet<string> _scheduledEventTypeIds = [];
 
     private Func<TInstance, bool>? _completedPredicate;
 
@@ -192,6 +193,8 @@ public abstract class MongoBusStateMachine<TInstance>
             || _ignoredEvents.Contains(("*", typeof(TMessage)));
     }
 
+    internal bool IsScheduledEvent(string typeId) => _scheduledEventTypeIds.Contains(typeId);
+
     internal bool IsCompleted(TInstance instance) => _completedPredicate?.Invoke(instance) ?? false;
 
     internal IReadOnlyDictionary<string, SagaEventRegistration> GetEventRegistrations() => _eventRegistrations;
@@ -217,6 +220,8 @@ public abstract class MongoBusStateMachine<TInstance>
         var activities = clause.BuildActivities();
         if (activities != null)
             _behaviors[(stateName, clause.MessageType)] = activities;
+
+        _scheduledEventTypeIds.UnionWith(clause.ScheduledTypeIds);
     }
 
     private static PropertyInfo GetPropertyInfo<TProperty>(Expression<Func<TInstance, TProperty>> expression)
@@ -247,6 +252,8 @@ public class SagaWhenClause<TInstance>
         _builder = builder;
     }
 
+    internal virtual IEnumerable<string> ScheduledTypeIds => [];
+
     internal virtual object? BuildActivities()
     {
         if (_builder == null) return null;
@@ -271,6 +278,8 @@ public sealed class SagaWhenClause<TInstance, TMessage> : SagaWhenClause<TInstan
     }
 
     internal override object? BuildActivities() => _builder.Build();
+
+    internal override IEnumerable<string> ScheduledTypeIds => _builder.ScheduledTypeIds;
 
     public SagaWhenClause<TInstance, TMessage> Then(Action<SagaConsumeContext<TInstance, TMessage>> action)
     {

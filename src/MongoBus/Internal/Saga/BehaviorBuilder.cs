@@ -12,8 +12,11 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
     where TInstance : class, ISagaInstance
 {
     private readonly List<ISagaActivity<TInstance, TMessage>> _activities = [];
+    private readonly HashSet<string> _scheduledTypeIds = [];
 
     internal IReadOnlyList<ISagaActivity<TInstance, TMessage>> Build() => _activities.AsReadOnly();
+
+    internal IReadOnlySet<string> ScheduledTypeIds => _scheduledTypeIds;
 
     // --- Core Activities ---
 
@@ -87,6 +90,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Action<TInstance, string?>? tokenSetter = null,
         TimeSpan? delay = null)
     {
+        _scheduledTypeIds.Add(schedule.TypeId);
         if (tokenSetter != null)
             _activities.Add(new ScheduleWithTokenActivity<TInstance, TMessage, TTimeout>(schedule, factory, tokenSetter, delay));
         else
@@ -100,6 +104,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Action<TInstance, string?>? tokenSetter = null,
         TimeSpan? delay = null)
     {
+        _scheduledTypeIds.Add(schedule.TypeId);
         if (tokenSetter != null)
             _activities.Add(new ScheduleWithTokenAsyncActivity<TInstance, TMessage, TTimeout>(schedule, factory, tokenSetter, delay));
         else
@@ -121,6 +126,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Func<SagaConsumeContext<TInstance, TMessage>, TRequest> factory,
         Action<TInstance, string?> requestIdSetter)
     {
+        _scheduledTypeIds.Add(request.TimeoutTypeId);
         _activities.Add(new RequestActivity<TInstance, TMessage, TRequest, TResponse>(request, factory, requestIdSetter));
         return this;
     }
@@ -130,6 +136,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Func<SagaConsumeContext<TInstance, TMessage>, Task<TRequest>> factory,
         Action<TInstance, string?> requestIdSetter)
     {
+        _scheduledTypeIds.Add(request.TimeoutTypeId);
         _activities.Add(new RequestAsyncActivity<TInstance, TMessage, TRequest, TResponse>(request, factory, requestIdSetter));
         return this;
     }
@@ -156,9 +163,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Func<SagaConsumeContext<TInstance, TMessage>, bool> condition,
         Action<BehaviorBuilder<TInstance, TMessage>> thenBranch)
     {
-        var builder = new BehaviorBuilder<TInstance, TMessage>();
-        thenBranch(builder);
-        _activities.Add(new IfActivity<TInstance, TMessage>(condition, builder.Build()));
+        _activities.Add(new IfActivity<TInstance, TMessage>(condition, BuildBranch(thenBranch)));
         return this;
     }
 
@@ -166,9 +171,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Func<SagaConsumeContext<TInstance, TMessage>, Task<bool>> condition,
         Action<BehaviorBuilder<TInstance, TMessage>> thenBranch)
     {
-        var builder = new BehaviorBuilder<TInstance, TMessage>();
-        thenBranch(builder);
-        _activities.Add(new IfAsyncActivity<TInstance, TMessage>(condition, builder.Build()));
+        _activities.Add(new IfAsyncActivity<TInstance, TMessage>(condition, BuildBranch(thenBranch)));
         return this;
     }
 
@@ -177,11 +180,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Action<BehaviorBuilder<TInstance, TMessage>> thenBranch,
         Action<BehaviorBuilder<TInstance, TMessage>> elseBranch)
     {
-        var thenBuilder = new BehaviorBuilder<TInstance, TMessage>();
-        var elseBuilder = new BehaviorBuilder<TInstance, TMessage>();
-        thenBranch(thenBuilder);
-        elseBranch(elseBuilder);
-        _activities.Add(new IfElseActivity<TInstance, TMessage>(condition, thenBuilder.Build(), elseBuilder.Build()));
+        _activities.Add(new IfElseActivity<TInstance, TMessage>(condition, BuildBranch(thenBranch), BuildBranch(elseBranch)));
         return this;
     }
 
@@ -190,11 +189,7 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         Action<BehaviorBuilder<TInstance, TMessage>> thenBranch,
         Action<BehaviorBuilder<TInstance, TMessage>> elseBranch)
     {
-        var thenBuilder = new BehaviorBuilder<TInstance, TMessage>();
-        var elseBuilder = new BehaviorBuilder<TInstance, TMessage>();
-        thenBranch(thenBuilder);
-        elseBranch(elseBuilder);
-        _activities.Add(new IfElseAsyncActivity<TInstance, TMessage>(condition, thenBuilder.Build(), elseBuilder.Build()));
+        _activities.Add(new IfElseAsyncActivity<TInstance, TMessage>(condition, BuildBranch(thenBranch), BuildBranch(elseBranch)));
         return this;
     }
 
@@ -205,8 +200,18 @@ public sealed class BehaviorBuilder<TInstance, TMessage>
         var builder = new SwitchCaseBuilder<TInstance, TMessage>();
         casesBuilder(builder);
         var (cases, defaultBranch) = builder.Build();
+        _scheduledTypeIds.UnionWith(builder.ScheduledTypeIds);
         _activities.Add(new SwitchActivity<TInstance, TMessage>(selector, cases, defaultBranch));
         return this;
+    }
+
+    private IReadOnlyList<ISagaActivity<TInstance, TMessage>> BuildBranch(
+        Action<BehaviorBuilder<TInstance, TMessage>> branch)
+    {
+        var builder = new BehaviorBuilder<TInstance, TMessage>();
+        branch(builder);
+        _scheduledTypeIds.UnionWith(builder.ScheduledTypeIds);
+        return builder.Build();
     }
 
     // --- Exception Handling ---
@@ -243,24 +248,32 @@ public sealed class SwitchCaseBuilder<TInstance, TMessage>
 {
     private readonly Dictionary<string, IReadOnlyList<ISagaActivity<TInstance, TMessage>>> _cases = new();
     private IReadOnlyList<ISagaActivity<TInstance, TMessage>>? _defaultBranch;
+    private readonly HashSet<string> _scheduledTypeIds = [];
+
+    internal IReadOnlySet<string> ScheduledTypeIds => _scheduledTypeIds;
 
     public SwitchCaseBuilder<TInstance, TMessage> Case(
         string value,
         Action<BehaviorBuilder<TInstance, TMessage>> branch)
     {
-        var builder = new BehaviorBuilder<TInstance, TMessage>();
-        branch(builder);
-        _cases[value] = builder.Build();
+        _cases[value] = BuildBranch(branch);
         return this;
     }
 
     public SwitchCaseBuilder<TInstance, TMessage> Default(
         Action<BehaviorBuilder<TInstance, TMessage>> branch)
     {
+        _defaultBranch = BuildBranch(branch);
+        return this;
+    }
+
+    private IReadOnlyList<ISagaActivity<TInstance, TMessage>> BuildBranch(
+        Action<BehaviorBuilder<TInstance, TMessage>> branch)
+    {
         var builder = new BehaviorBuilder<TInstance, TMessage>();
         branch(builder);
-        _defaultBranch = builder.Build();
-        return this;
+        _scheduledTypeIds.UnionWith(builder.ScheduledTypeIds);
+        return builder.Build();
     }
 
     internal (IReadOnlyDictionary<string, IReadOnlyList<ISagaActivity<TInstance, TMessage>>> Cases,

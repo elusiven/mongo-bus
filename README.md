@@ -484,7 +484,7 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `Publish` / `PublishAsync` | Publish a message via the bus |
 | `Send` / `SendAsync` | Send to a specific endpoint |
 | `Schedule` / `ScheduleAsync` | Schedule a delayed message |
-| `Unschedule` | Clear a schedule token |
+| `Unschedule` | Clear a schedule token. The scheduled message is still delivered; it is discarded if the saga has completed or its current state does not handle it |
 | `Request` / `RequestAsync` | Publish request with timeout |
 | `Respond` / `RespondAsync` | Publish a response |
 | `If` / `IfAsync` | Conditional branching |

@@ -12,6 +12,8 @@ public sealed class SagaRequest<TInstance, TRequest, TResponse>
     public string ResponseTypeId { get; }
     public TimeSpan Timeout { get; internal set; }
 
+    internal string TimeoutTypeId => RequestTypeId + ".timeout";
+
     /// <summary>
     /// Auto-generated state representing the pending request.
     /// </summary>
