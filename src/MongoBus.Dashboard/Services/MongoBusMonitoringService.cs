@@ -49,11 +49,44 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
 
     public async Task<DashboardStats> GetStatsAsync(CancellationToken ct = default)
     {
-        var pendingTask = _inbox.CountDocumentsAsync(x => x.Status == "Pending", cancellationToken: ct);
-        var processedTask = _inbox.CountDocumentsAsync(x => x.Status == "Processed", cancellationToken: ct);
-        var deadTask = _inbox.CountDocumentsAsync(x => x.Status == "Dead", cancellationToken: ct);
+        var endpointStatsTask = CountMessagesPerEndpointAsync(ct);
+        var recentFailuresTask = FindRecentFailuresAsync(ct);
+        await Task.WhenAll(endpointStatsTask, recentFailuresTask);
 
-        var recentFailuresTask = _inbox.Find(x => x.Status == "Dead")
+        var endpointStats = await endpointStatsTask;
+        return new DashboardStats(
+            endpointStats.Sum(e => e.Pending),
+            endpointStats.Sum(e => e.Processed),
+            endpointStats.Sum(e => e.Dead),
+            await recentFailuresTask,
+            endpointStats);
+    }
+
+    /// <summary>
+    /// Counts messages per endpoint and status in one pass. Sorting on the fields of the bus's
+    /// (EndpointId, Status, ...) inbox index first lets MongoDB answer from that index instead of reading every
+    /// inbox document; the dashboard polls this every few seconds.
+    /// </summary>
+    private async Task<IReadOnlyList<EndpointStats>> CountMessagesPerEndpointAsync(CancellationToken ct)
+    {
+        var counts = await _inbox.Aggregate()
+            .SortBy(x => x.EndpointId)
+            .ThenBy(x => x.Status)
+            .Group(x => new { x.EndpointId, x.Status }, g => new { g.Key.EndpointId, g.Key.Status, Count = g.LongCount() })
+            .ToListAsync(ct);
+
+        return counts
+            .GroupBy(count => count.EndpointId)
+            .Select(endpoint => new EndpointStats(
+                endpoint.Key,
+                endpoint.Where(c => c.Status == "Pending").Sum(c => c.Count),
+                endpoint.Where(c => c.Status == "Processed").Sum(c => c.Count),
+                endpoint.Where(c => c.Status == "Dead").Sum(c => c.Count)))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<RecentFailure>> FindRecentFailuresAsync(CancellationToken ct) =>
+        await _inbox.Find(x => x.Status == "Dead")
             .SortByDescending(x => x.CreatedUtc)
             .Limit(10)
             .Project(x => new RecentFailure(
@@ -63,27 +96,6 @@ public sealed class MongoBusMonitoringService(IMongoDatabase db) : IMongoBusMoni
                 x.LastError ?? "Unknown error",
                 x.CreatedUtc))
             .ToListAsync(ct);
-
-        var endpointStatsTask = _inbox.Aggregate()
-            .Group(x => x.EndpointId, g => new
-            {
-                EndpointId = g.Key,
-                Pending = g.Count(x => x.Status == "Pending"),
-                Processed = g.Count(x => x.Status == "Processed"),
-                Dead = g.Count(x => x.Status == "Dead")
-            })
-            .Project(x => new EndpointStats(x.EndpointId, x.Pending, x.Processed, x.Dead))
-            .ToListAsync(ct);
-
-        await Task.WhenAll(pendingTask, processedTask, deadTask, recentFailuresTask, endpointStatsTask);
-
-        return new DashboardStats(
-            await pendingTask,
-            await processedTask,
-            await deadTask,
-            await recentFailuresTask,
-            await endpointStatsTask);
-    }
 
     public async Task<IReadOnlyList<string>> GetSagaCollectionsAsync(CancellationToken ct = default)
     {

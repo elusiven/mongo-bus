@@ -377,6 +377,8 @@ The dashboard provides real-time polling updates for:
 - Detailed logs of the most recent failures.
 - Saga instance browser with state distribution and transition history.
 
+On startup, `AddMongoBusDashboard()` also creates an index on `bus_inbox` (`Status`, `CreatedUtc` descending) so the recent-failures list does not scan the inbox. Applications that do not register the dashboard do not get this index.
+
 #### Securing the Dashboard
 
 By default, the dashboard is **secured** with a built-in authorization policy that requires the `mongobus:dashboard` scope. The scope may appear anywhere in a space-separated `scope` claim, or in an `scp` claim as issued by Microsoft Entra ID (including JwtBearer's mapped `http://schemas.microsoft.com/identity/claims/scope` type). Ensure your access tokens include this scope, or override with your own policy.
