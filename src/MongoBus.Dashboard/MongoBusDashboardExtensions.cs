@@ -12,7 +12,8 @@ public sealed class MongoBusDashboardOptions
 {
     /// <summary>
     /// The name of an authorization policy to apply to all dashboard routes.
-    /// Defaults to "MongoBusDashboard" which requires the claim scope=mongobus:dashboard.
+    /// Defaults to "MongoBusDashboard", which requires the mongobus:dashboard scope in a space-separated
+    /// scope or scp claim.
     /// Set to null to explicitly disable authorization (open dashboard).
     /// Override with your own policy name for custom authorization logic.
     /// </summary>
@@ -36,7 +37,7 @@ public static class MongoBusDashboardExtensions
         {
             services.AddAuthorization(auth =>
                 auth.AddPolicy(MongoBusDashboardOptions.DefaultPolicyName, policy =>
-                    policy.RequireClaim("scope", MongoBusDashboardOptions.DefaultScope)));
+                    policy.RequireAssertion(context => DashboardScope.IsGrantedTo(context.User))));
         }
 
         return services;

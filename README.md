@@ -379,10 +379,10 @@ The dashboard provides real-time polling updates for:
 
 #### Securing the Dashboard
 
-By default, the dashboard is **secured** with a built-in authorization policy that requires the claim `scope = mongobus:dashboard`. Ensure your auth tokens include this scope, or override with your own policy.
+By default, the dashboard is **secured** with a built-in authorization policy that requires the `mongobus:dashboard` scope. The scope may appear anywhere in a space-separated `scope` claim, or in an `scp` claim as issued by Microsoft Entra ID (including JwtBearer's mapped `http://schemas.microsoft.com/identity/claims/scope` type). Ensure your access tokens include this scope, or override with your own policy.
 
 ```csharp
-// Default: requires scope=mongobus:dashboard (no extra config needed)
+// Default: requires the mongobus:dashboard scope (no extra config needed)
 builder.Services.AddMongoBusDashboard();
 
 // Override with your own policy:
