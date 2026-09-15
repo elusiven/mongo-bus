@@ -1243,7 +1243,15 @@ git commit -m "chat-agent-loop: renew locks around dispatch for consumers that o
 
 ## Verification
 
-(Recorded in Phase 4: each command from Global Constraints with its exact result.)
+Run at the repository root on `ef7d2fd` — the five task commits rebased onto `origin/main` `9cad9e2` (PR #50) — on 2026-09-15:
+
+- `dotnet restore` → "All projects are up-to-date for restore.", exit 0.
+- `dotnet build --no-restore -c Release` → 0 Error(s), 345 Warning(s). A clean rebuild (`dotnet build --no-restore --no-incremental -c Release`) gives the same counts, and none of the warnings is reported in a file this branch touches.
+- `dotnet test --no-build -c Release`:
+  - Run 1: MongoBus.Dashboard.Tests 37/37 passed. MongoBus.Tests 283/284 (3 m 37 s) — `ConcurrencyTests.MessageShouldNotBeProcessedByMultipleWorkersSimultaneously` failed.
+  - Run 2, same build (`dotnet test tests/MongoBus.Tests --no-build -c Release`): MongoBus.Tests 284/284 passed (3 m 38 s).
+  - About the run-1 failure: the test drives a consumer that does not set `RenewLock`, whose lock owner and dispatch path are unchanged from `main` (`git diff origin/main..HEAD -- src/MongoBus/Internal/MongoBusRuntime.cs`: `LockOwnerFor` returns the pump id and `DispatchAsync` calls the dispatcher directly when `RenewLock` is false). It passed 3 of 3 runs on its own and has no failures in the repository's CI history. It asserts 1–2 handler starts for a 1-second lock and a 2-second handler, which a slow outcome write under full-suite load can exceed. Reported to the session maintaining the test suite, which is rewriting that test on a separate test-only branch; not changed in this PR.
+- Per-task runs by the implementers: `LockRenewalConfigTests` 5/5; `LockRenewalTests` 5/5 in two consecutive runs; `MessageLockRenewerTests` 10/10 in three consecutive runs.
 
 Baseline before any change, at `8d04a75`: `dotnet build --no-restore -c Release` 0 errors / 282 warnings; `dotnet test --no-build -c Release` MongoBus.Tests 225/225, MongoBus.Dashboard.Tests 24/24. (At `dfb91e2`, `SagaPartitionerTests.AcquireAsync_DifferentKeys_CanRunConcurrently` failed 2 of 2 local runs because `SagaPartitioner` partitions on the per-process-randomized `string.GetHashCode()`; PR #29 on `5b2f2e0` addresses that test.)
 
