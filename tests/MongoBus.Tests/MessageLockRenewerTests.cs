@@ -203,6 +203,23 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
     }
 
+    [Fact]
+    public async Task Lease_StillGivesUp_WhenTheLoggerThrows()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await new MessageLockRenewer(inbox, new LoggerThatFailsOnGiveUp())
+            .TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
+
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+
+        signalled.Should().BeTrue();
+    }
+
     private static string NewDatabaseName() => "lock_renewer_" + Guid.NewGuid().ToString("N");
 
     private IMongoCollection<InboxMessage> InboxIn(string databaseName, string? applicationName = null) =>
@@ -315,5 +332,20 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         public void Log<TState>(
             LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
             _entries.Enqueue((logLevel, formatter(state, exception)));
+    }
+
+    /// <summary>Fails only on the give-up warning, so the renewal loop's own logging is unaffected.</summary>
+    private sealed class LoggerThatFailsOnGiveUp : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (formatter(state, exception).Contains("neared expiry"))
+                throw new InvalidOperationException("logging provider failed");
+        }
     }
 }

@@ -1794,6 +1794,163 @@ git add tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2
 git commit -m "chat-agent-loop: measure the lease give-up against the watchdog budget"
 ```
 
+### Fix-commit correctness review (deep-reviewer, lens correctness, scope `b6e373f..5a39b23`) — "Acceptable with concerns, merge with caution"
+
+No Critical or Important findings. It traced the shutdown, cancellation, disposal and outcome-write paths and found no way for a lease that outlives the stopping token to extend or clobber another delivery's lock: `TryExtendAsync` filters on `_id + LockOwner + Status == Pending` and `LockOwnerFor` mints a per-lock owner for renewing endpoints only. Consumers without `RenewLock` are equivalent to `main`. Decisions:
+
+- **[Medium] The give-up warning runs on the watchdog's timer thread with no catch frame above it.** Accepted — Fix 5. Every other `ILogger` call in the lease sits inside `RenewUntilStoppedAsync`'s `catch`; the registration added in Fix 3 is invoked from `CancelAfter`, where a throwing logging provider (disk full, a disposed exporter during shutdown, a failing scope enricher) has no handler and can take the process down, in exactly the degraded-MongoDB scenario the watchdog serves. The plan's earlier reason for deferring ("no other logging call in the library is guarded") does not hold, because no other call runs in a cancellation callback.
+- **[Low] `HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns` compares a stored wall-clock expiry with a wall-clock read**, the pattern Fix 4 removed elsewhere, with a worst-case margin of about 0.2 s against this machine's 1.4-1.8 s clock steps. Accepted — Fix 6 (6-second lock, 8-second observation; `readAt` stays, because `locked.LockedUntilUtc` would stop failing when Fix 1 is reverted).
+- **[Low] `Task.Delay(storedExpiry - DateTime.UtcNow + 250 ms)` can throw** instead of asserting. Accepted — Fix 6 (floor at zero).
+- **[Low] The give-up budget is duplicated and its 500 ms tolerance equals `LeaseLockTime / 6`**, the whole margin under test. Accepted — Fix 6 (named `GiveUpBudget` and `SchedulingTolerance` constants, same values).
+- **[Low] `_lockTakenReported` can be read before it is written**, producing one extra warning for a single event. Not fixed, as the reviewer recommends: `LockLost` is already cancelled and the dispatch already cancelled, the window needs a write returning `matchedCount == 0` at the same instant the timer fires, and it is not reproducible without instrumenting the lease. Follow-up: `Interlocked.Exchange` in both paths.
+- Also noted and already on the follow-up list: `DisposeAsync` skips disposing its token sources if `await _renewing` rethrows and is not idempotent (M8), and Fix 1 slightly widens the microsecond-wide spurious "no longer holds the lock" warning after an outcome write.
+
+### Fix 5: The give-up report cannot take the process down
+
+**Files:**
+- Modify: `src/MongoBus/Internal/MessageLockLease.cs` (`ReportGivingUp`)
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs`
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `MessageLockRenewerTests`:
+
+```csharp
+    [Fact]
+    public async Task Lease_StillGivesUp_WhenTheLoggerThrows()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+
+        await using var lease = await new MessageLockRenewer(inbox, new LoggerThatFailsOnGiveUp())
+            .TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
+
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+
+        signalled.Should().BeTrue();
+    }
+
+    /// <summary>Fails only on the give-up warning, so the renewal loop's own logging is unaffected.</summary>
+    private sealed class LoggerThatFailsOnGiveUp : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (formatter(state, exception).Contains("neared expiry"))
+                throw new InvalidOperationException("logging provider failed");
+        }
+    }
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_StillGivesUp_WhenTheLoggerThrows"`
+Expected: FAIL. The exception is thrown inside a cancellation callback on the watchdog's timer thread, so it is unhandled: expect the run to report the test host crashing (or the test failing with `InvalidOperationException`), not a clean assertion failure. Record exactly what the runner printed.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ReportGivingUp`, guard the single log call:
+
+```csharp
+        try
+        {
+            log.LogWarning(
+                "The lock on message {MessageId} on endpoint {EndpointId} could not be renewed before it neared expiry; cancelling its dispatch.",
+                message.Id, message.EndpointId);
+        }
+        catch (Exception)
+        {
+            // This runs in a cancellation callback on the watchdog's timer thread. No caller can catch a logging
+            // provider that throws there, and an unhandled exception would end the process; losing the warning is
+            // the lesser failure, and the dispatch is cancelled either way.
+        }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests"`
+Expected: PASS, 13 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/MongoBus/Internal/MessageLockLease.cs tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2026-09-15-chat-agent-loop-mongobus-lock-renewal.md
+git commit -m "chat-agent-loop: keep a failing logger from ending the process when a lease gives up"
+```
+
+### Fix 6: Test robustness — clock margin, delay floor, named budget
+
+**Files:**
+- Test: `tests/MongoBus.Tests/LockRenewalTests.cs` (`FinishingDefinition`, `HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns`)
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs` (crash-redelivery test, both give-up tests)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Widen the shutdown test's margin**
+
+In `LockRenewalTests`, `FinishingDefinition.LockTime` becomes `TimeSpan.FromSeconds(6)`, and in `HandlerStillFinishingWhileTheBusStops_KeepsItsLockUntilItReturns` the observation delay `await Task.Delay(TimeSpan.FromSeconds(5));` becomes `await Task.Delay(TimeSpan.FromSeconds(8));`. The wait still exceeds `LockTime`, so the test still fails without Fix 1, and the margin against a 1.8 s clock step grows from about 0.2 s to about 4 s. Do not replace `readAt` with `locked.LockedUntilUtc`: under the old behaviour one post-stop renewal could advance the expiry past that value, and the assertion would stop failing when Fix 1 is reverted.
+
+- [ ] **Step 2: Floor the crash-redelivery delay**
+
+In `MessageLockRenewerTests`, `MessageWhoseRenewalStoppedWithoutARelease_IsLockableByAnotherPumpOnlyAfterItsLockLapses`, replace
+
+```csharp
+        await Task.Delay(storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250));
+```
+
+with
+
+```csharp
+        var untilLapse = storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+        await Task.Delay(untilLapse > TimeSpan.Zero ? untilLapse : TimeSpan.Zero);
+```
+
+- [ ] **Step 3: Name the give-up budget**
+
+In `MessageLockRenewerTests`, next to `LeaseLockTime`, add
+
+```csharp
+    private static readonly TimeSpan GiveUpBudget = LeaseLockTime - LeaseLockTime / 6;
+    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromMilliseconds(500);
+```
+
+and in both `Lease_SignalsLockLostBeforeTheLockExpires_*` tests replace
+
+```csharp
+        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
+```
+
+with
+
+```csharp
+        sinceClaim.Elapsed.Should().BeLessThan(GiveUpBudget + SchedulingTolerance);
+```
+
+(Same values; the deadline and its tolerance are now named and defined once.)
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests|FullyQualifiedName~MongoBus.Tests.LockRenewalTests"`
+Expected: PASS (MessageLockRenewerTests 13, LockRenewalTests 6). Run it twice.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/MongoBus.Tests/LockRenewalTests.cs tests/MongoBus.Tests/MessageLockRenewerTests.cs
+git commit -m "chat-agent-loop: make the lease tests robust to clock steps and name the give-up budget"
+```
+
+After Fix 5 and Fix 6: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle).
+
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
 
 Decisions and Fixes 1-2 confirmed sound against the code; no rejected or deferred item blocks 3.1.0. Applied:

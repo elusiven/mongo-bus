@@ -96,9 +96,18 @@ internal sealed class MessageLockLease : IAsyncDisposable
         if (_lockTakenReported)
             return;
 
-        log.LogWarning(
-            "The lock on message {MessageId} on endpoint {EndpointId} could not be renewed before it neared expiry; cancelling its dispatch.",
-            message.Id, message.EndpointId);
+        try
+        {
+            log.LogWarning(
+                "The lock on message {MessageId} on endpoint {EndpointId} could not be renewed before it neared expiry; cancelling its dispatch.",
+                message.Id, message.EndpointId);
+        }
+        catch (Exception)
+        {
+            // This runs in a cancellation callback on the watchdog's timer thread. No caller can catch a logging
+            // provider that throws there, and an unhandled exception would end the process; losing the warning is
+            // the lesser failure, and the dispatch is cancelled either way.
+        }
     }
 
     public async ValueTask DisposeAsync()
