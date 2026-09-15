@@ -3,21 +3,6 @@ using MongoBus.Abstractions.Saga;
 namespace MongoBus.Internal.Saga.Activities;
 
 /// <summary>
-/// Marker exception used by the Rethrow activity to signal that the caught exception
-/// should be re-thrown after the catch branch completes.
-/// </summary>
-internal sealed class SagaRethrowException : Exception
-{
-    public Exception Original { get; }
-
-    public SagaRethrowException(Exception original)
-        : base("Saga rethrow requested", original)
-    {
-        Original = original;
-    }
-}
-
-/// <summary>
 /// Wraps preceding activities in a try-catch for a specific exception type.
 /// If the exception is caught, the catch branch executes.
 /// </summary>
@@ -36,7 +21,7 @@ internal sealed class CatchActivity<TInstance, TMessage, TException>(
             foreach (var activity in guardedActivities)
                 await activity.ExecuteAsync(context);
         }
-        catch (TException ex)
+        catch (TException ex) when (!IsCancellationOfTheHandler(ex, context.CancellationToken))
         {
             var exceptionContext = new SagaExceptionContext<TInstance, TMessage, TException>(
                 context.Saga,
@@ -53,6 +38,11 @@ internal sealed class CatchActivity<TInstance, TMessage, TException>(
                 throw;
         }
     }
+
+    // A stopping bus cancels the handler's token. The dispatcher releases that event for redelivery, so it has not
+    // failed and there is nothing to compensate for.
+    private static bool IsCancellationOfTheHandler(Exception exception, CancellationToken handlerToken) =>
+        exception is OperationCanceledException && handlerToken.IsCancellationRequested;
 }
 
 /// <summary>
