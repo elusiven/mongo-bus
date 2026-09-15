@@ -25,6 +25,11 @@ public sealed class SagaOptions
     public bool HistoryEnabled { get; set; }
     public TimeSpan HistoryTtl { get; set; } = TimeSpan.FromDays(30);
 
+    /// <summary>
+    /// When greater than zero, a background scan moves every saga created more than this long ago, and not in the
+    /// <c>Final</c> state, to <see cref="TimeoutStateName"/>. The age is measured from <see cref="Abstractions.Saga.ISagaInstance.CreatedUtc"/>,
+    /// not from the saga's last activity. Defaults to <see cref="TimeSpan.Zero"/> (disabled).
+    /// </summary>
     public TimeSpan SagaTimeout { get; set; } = TimeSpan.Zero;
     public string TimeoutStateName { get; set; } = "TimedOut";
     public TimeSpan TimeoutScanInterval { get; set; } = TimeSpan.FromSeconds(30);
