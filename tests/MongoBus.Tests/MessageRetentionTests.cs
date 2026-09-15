@@ -1,6 +1,4 @@
 using FluentAssertions;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using MongoBus.DependencyInjection;
 using MongoBus.Infrastructure;
 using MongoDB.Bson;
@@ -22,7 +20,7 @@ public class MessageRetentionTests(MongoDbFixture fixture)
     [InlineData("Dead")]
     public async Task Unprocessed_Inbox_Message_Should_Outlive_Retention_Window(string status)
     {
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, NewDatabaseName(),
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString,
             opt => opt.ProcessedMessageTtl = ShortRetention);
         var inbox = bus.Database.GetCollection<InboxMessage>("bus_inbox");
         var processed = InboxMessageProcessedMonthAgo();
@@ -40,7 +38,7 @@ public class MessageRetentionTests(MongoDbFixture fixture)
     [InlineData("Dead")]
     public async Task Unpublished_Outbox_Message_Should_Outlive_Retention_Window(string status)
     {
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, NewDatabaseName(), opt =>
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, opt =>
         {
             opt.Outbox.Enabled = true;
             opt.Outbox.ProcessedMessageTtl = ShortRetention;
@@ -65,8 +63,11 @@ public class MessageRetentionTests(MongoDbFixture fixture)
         var collection = Database(databaseName).GetCollection<BsonDocument>(collectionName);
         await CreateTtlIndexAsync(collection, "CreatedUtc", DefaultRetention);
 
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, databaseName,
-            opt => opt.Outbox.Enabled = true);
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, opt =>
+        {
+            opt.DatabaseName = databaseName;
+            opt.Outbox.Enabled = true;
+        });
 
         (await TtlIndexesAsync(collection)).Should().NotContainKey("CreatedUtc");
     }
@@ -75,12 +76,18 @@ public class MessageRetentionTests(MongoDbFixture fixture)
     public async Task Changing_Retention_Window_Should_Update_Existing_Ttl_Index()
     {
         var databaseName = NewDatabaseName();
-        var firstDeployment = await RunningBus.StartAsync(fixture.ConnectionString, databaseName,
-            opt => opt.ProcessedMessageTtl = TimeSpan.FromDays(7));
+        var firstDeployment = await RunningBus.StartAsync(fixture.ConnectionString, opt =>
+        {
+            opt.DatabaseName = databaseName;
+            opt.ProcessedMessageTtl = TimeSpan.FromDays(7);
+        });
         await firstDeployment.DisposeAsync();
 
-        await using var secondDeployment = await RunningBus.StartAsync(fixture.ConnectionString, databaseName,
-            opt => opt.ProcessedMessageTtl = TimeSpan.FromDays(14));
+        await using var secondDeployment = await RunningBus.StartAsync(fixture.ConnectionString, opt =>
+        {
+            opt.DatabaseName = databaseName;
+            opt.ProcessedMessageTtl = TimeSpan.FromDays(14);
+        });
 
         var inbox = Database(databaseName).GetCollection<BsonDocument>("bus_inbox");
         (await TtlIndexesAsync(inbox)).Should().ContainKey("ProcessedUtc")
@@ -94,7 +101,7 @@ public class MessageRetentionTests(MongoDbFixture fixture)
         var files = Database(databaseName).GetCollection<BsonDocument>("user_uploads.files");
         await files.InsertOneAsync(new BsonDocument { ["filename"] = "avatar.png", ["uploadDate"] = DateTime.UtcNow });
 
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, databaseName);
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, opt => opt.DatabaseName = databaseName);
 
         (await TtlIndexesAsync(files)).Should().BeEmpty();
     }
@@ -106,7 +113,7 @@ public class MessageRetentionTests(MongoDbFixture fixture)
         var files = Database(databaseName).GetCollection<BsonDocument>("claimcheck.files");
         await CreateTtlIndexAsync(files, "uploadDate", DefaultRetention.Add(TimeSpan.FromDays(1)));
 
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, databaseName);
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, opt => opt.DatabaseName = databaseName);
 
         (await TtlIndexesAsync(files)).Should().BeEmpty();
     }
@@ -118,7 +125,7 @@ public class MessageRetentionTests(MongoDbFixture fixture)
         var files = Database(databaseName).GetCollection<BsonDocument>("media.files");
         await CreateTtlIndexAsync(files, "uploadDate", TimeSpan.FromHours(1));
 
-        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, databaseName);
+        await using var bus = await RunningBus.StartAsync(fixture.ConnectionString, opt => opt.DatabaseName = databaseName);
 
         (await TtlIndexesAsync(files)).Should().ContainKey("uploadDate")
             .WhoseValue.Should().Be((long)TimeSpan.FromHours(1).TotalSeconds);
@@ -200,52 +207,6 @@ public class MessageRetentionTests(MongoDbFixture fixture)
                 throw new TimeoutException($"The TTL monitor did not remove document {id} within {ExpiryTimeout}.");
 
             await Task.Delay(250);
-        }
-    }
-
-    private sealed class RunningBus(IReadOnlyList<IHostedService> hostedServices, IMongoDatabase database) : IAsyncDisposable
-    {
-        public IMongoDatabase Database { get; } = database;
-
-        public static async Task<RunningBus> StartAsync(
-            string connectionString,
-            string databaseName,
-            Action<MongoBusOptions>? configure = null)
-        {
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddMongoBus(opt =>
-            {
-                opt.ConnectionString = connectionString;
-                opt.DatabaseName = databaseName;
-                configure?.Invoke(opt);
-            });
-
-            var provider = services.BuildServiceProvider();
-            var started = new List<IHostedService>();
-            try
-            {
-                foreach (var hostedService in provider.GetServices<IHostedService>())
-                {
-                    await hostedService.StartAsync(CancellationToken.None);
-                    started.Add(hostedService);
-                }
-            }
-            catch
-            {
-                await StopAllAsync(started);
-                throw;
-            }
-
-            return new RunningBus(started, provider.GetRequiredService<IMongoDatabase>());
-        }
-
-        public async ValueTask DisposeAsync() => await StopAllAsync(hostedServices);
-
-        private static async Task StopAllAsync(IEnumerable<IHostedService> services)
-        {
-            foreach (var hostedService in services.Reverse())
-                await hostedService.StopAsync(CancellationToken.None);
         }
     }
 }
