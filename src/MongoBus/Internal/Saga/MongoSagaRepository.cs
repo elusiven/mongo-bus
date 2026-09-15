@@ -48,10 +48,10 @@ internal sealed class MongoSagaRepository<TInstance>(IMongoCollection<TInstance>
     }
 
     public Task InsertAsync(TInstance instance, CancellationToken ct)
-        => collection.InsertOneAsync(instance, cancellationToken: ct);
+        => InsertWithConflictCheckAsync(instance, session: null, ct);
 
     public Task InsertAsync(TInstance instance, IClientSessionHandle session, CancellationToken ct)
-        => collection.InsertOneAsync(session, instance, cancellationToken: ct);
+        => InsertWithConflictCheckAsync(instance, session, ct);
 
     public Task UpdateAsync(TInstance instance, int expectedVersion, CancellationToken ct)
         => ReplaceWithVersionCheckAsync(instance, expectedVersion, session: null, ct);
@@ -64,6 +64,24 @@ internal sealed class MongoSagaRepository<TInstance>(IMongoCollection<TInstance>
 
     public Task DeleteAsync(string correlationId, IClientSessionHandle session, CancellationToken ct)
         => collection.DeleteOneAsync(session, Builders<TInstance>.Filter.Eq(x => x.CorrelationId, correlationId), cancellationToken: ct);
+
+    private async Task InsertWithConflictCheckAsync(
+        TInstance instance,
+        IClientSessionHandle? session,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (session is null)
+                await collection.InsertOneAsync(instance, cancellationToken: ct);
+            else
+                await collection.InsertOneAsync(session, instance, cancellationToken: ct);
+        }
+        catch (MongoWriteException ex) when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
+        {
+            throw new SagaConcurrencyException(instance.CorrelationId, expectedVersion: 0, ex);
+        }
+    }
 
     private async Task ReplaceWithVersionCheckAsync(
         TInstance instance,
