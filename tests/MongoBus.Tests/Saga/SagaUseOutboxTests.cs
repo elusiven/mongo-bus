@@ -7,11 +7,14 @@ using MongoBus.DependencyInjection;
 using MongoBus.Infrastructure;
 using MongoBus.Internal;
 using MongoBus.Models.Saga;
-using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace MongoBus.Tests.Saga;
 
+/// <summary>
+/// UseOutbox against a standalone MongoDB, which does not support transactions. The transactional path itself is
+/// covered by <see cref="SagaUseOutboxReplicaSetTests"/>.
+/// </summary>
 [Collection("Mongo collection")]
 public class SagaUseOutboxTests(MongoDbFixture fixture)
 {
@@ -59,62 +62,9 @@ public class SagaUseOutboxTests(MongoDbFixture fixture)
     }
 
     [Fact]
-    public async Task UseOutbox_OnReplicaSet_RoutesSagaPublishesThroughOutbox()
-    {
-        var (sp, client) = BuildServices(useOutbox: true, allowFallback: false);
-
-        if (!await SupportsTransactionsAsync(client))
-            return; // standalone Mongo — skip; covered by other tests in this file
-
-        var hosted = await StartHostedAsync(sp);
-        try
-        {
-            var bus = sp.GetRequiredService<IMessageBus>();
-            var db = sp.GetRequiredService<IMongoDatabase>();
-            await WaitForBindingsAsync(db, "saga.useoutbox.start");
-
-            var correlationId = Guid.NewGuid().ToString("N");
-            await bus.PublishAsync("saga.useoutbox.start",
-                new StartWorkflow { Payload = "hello" },
-                correlationId: correlationId);
-
-            var sagaCollection = db.GetCollection<OutboxSagaState>("bus_saga_outbox-saga-state");
-            await WaitUntilAsync(async () =>
-                (await sagaCollection.Find(x => x.CorrelationId == correlationId).FirstOrDefaultAsync())
-                    ?.CurrentState == "Started");
-
-            var outbox = db.GetCollection<OutboxMessage>(MongoBusConstants.OutboxCollectionName);
-            // The saga's .Publish activity should have produced an outbox row (not a direct
-            // inbox row). The outbox relay may have already drained it, so check both the
-            // current outbox AND historical Status values.
-            var followUpCount = await outbox.CountDocumentsAsync(x => x.Topic == "saga.useoutbox.followup");
-            // It may be 0 if the relay already published+deleted, or 1 if still pending. Either
-            // is fine — what matters is that the saga went through outbox at all, which we
-            // assert by checking the state was saved (above) and the message was published.
-            // To prove outbox routing specifically, pause the relay and re-check.
-            _ = followUpCount;
-
-            // Strong assertion: there should be NO direct inbox row produced *by the bus
-            // publish path* for the follow-up before the outbox relay had a chance to run.
-            // Easier and more reliable: assert that the state-machine path produced a
-            // committed saga AND the follow-up message has reached its endpoint.
-            var inbox = db.GetCollection<InboxMessage>("bus_inbox");
-            await WaitUntilAsync(async () =>
-                await inbox.CountDocumentsAsync(x => x.TypeId == "saga.useoutbox.followup") >= 1);
-        }
-        finally
-        {
-            await StopHostedAsync(hosted);
-        }
-    }
-
-    [Fact]
     public async Task UseOutbox_OnStandalone_WithFallback_DegradesToDirectPublish()
     {
-        var (sp, client) = BuildServices(useOutbox: true, allowFallback: true);
-
-        if (await SupportsTransactionsAsync(client))
-            return; // replica set — fallback path is not exercised
+        var sp = BuildServices(useOutbox: true, allowFallback: true);
 
         var hosted = await StartHostedAsync(sp);
         try
@@ -146,10 +96,7 @@ public class SagaUseOutboxTests(MongoDbFixture fixture)
     [Fact]
     public async Task UseOutbox_OnStandalone_WithoutFallback_ThrowsClearly()
     {
-        var (sp, client) = BuildServices(useOutbox: true, allowFallback: false);
-
-        if (await SupportsTransactionsAsync(client))
-            return; // replica set — hard-fail path is not exercised
+        var sp = BuildServices(useOutbox: true, allowFallback: false);
 
         var hosted = await StartHostedAsync(sp);
         try
@@ -187,7 +134,7 @@ public class SagaUseOutboxTests(MongoDbFixture fixture)
         }
     }
 
-    private (ServiceProvider sp, IMongoClient client) BuildServices(bool useOutbox, bool allowFallback)
+    private ServiceProvider BuildServices(bool useOutbox, bool allowFallback)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -206,8 +153,7 @@ public class SagaUseOutboxTests(MongoDbFixture fixture)
             opt.MaxAttempts = 2; // keep dead-letter test quick
         });
 
-        var sp = services.BuildServiceProvider();
-        return (sp, sp.GetRequiredService<IMongoClient>());
+        return services.BuildServiceProvider();
     }
 
     private static async Task<List<IHostedService>> StartHostedAsync(ServiceProvider sp)
@@ -238,12 +184,5 @@ public class SagaUseOutboxTests(MongoDbFixture fixture)
             await Task.Delay(100);
         }
         throw new TimeoutException("Condition was not met in time.");
-    }
-
-    private static async Task<bool> SupportsTransactionsAsync(IMongoClient client)
-    {
-        var admin = client.GetDatabase("admin");
-        var hello = await admin.RunCommandAsync<BsonDocument>(new BsonDocument("hello", 1));
-        return hello.Contains("setName");
     }
 }

@@ -204,36 +204,35 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         instance.Version++;
 
         using var session = await mongoClient!.StartSessionAsync(cancellationToken: ct);
-        session.StartTransaction();
-        try
-        {
-            if (isNew)
-                await repository.InsertAsync(instance, session, ct);
-            else
-                await repository.UpdateAsync(instance, previousVersion, session, ct);
 
-            if (historyWriter != null)
+        // WithTransactionAsync runs the writes again after a TransientTransactionError and retries the commit after an
+        // UnknownTransactionCommitResult, instead of failing the event and waiting for the dispatcher's retry backoff.
+        await session.WithTransactionAsync(
+            async (transactionSession, transactionCt) =>
             {
-                await historyWriter.WriteAsync(
-                    correlationId, previousState, instance.CurrentState,
-                    GetTypeId(context), context, instance.Version, session, ct);
-            }
+                if (isNew)
+                    await repository.InsertAsync(instance, transactionSession, transactionCt);
+                else
+                    await repository.UpdateAsync(instance, previousVersion, transactionSession, transactionCt);
 
-            if (stateMachine.IsCompleted(instance))
-            {
-                logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
-                await repository.DeleteAsync(correlationId, session, ct);
-            }
+                if (historyWriter != null)
+                {
+                    await historyWriter.WriteAsync(
+                        correlationId, previousState, instance.CurrentState,
+                        GetTypeId(context), context, instance.Version, transactionSession, transactionCt);
+                }
 
-            await buffered.FlushAsync(transactionalBus!, session, ct);
+                if (stateMachine.IsCompleted(instance))
+                {
+                    logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
+                    await repository.DeleteAsync(correlationId, transactionSession, transactionCt);
+                }
 
-            await session.CommitTransactionAsync(ct);
-        }
-        catch
-        {
-            await session.AbortTransactionAsync(CancellationToken.None);
-            throw;
-        }
+                await buffered.FlushAsync(transactionalBus!, transactionSession, transactionCt);
+
+                return true;
+            },
+            cancellationToken: ct);
     }
 
     private async Task ApplyCompositeEventsAsync(
