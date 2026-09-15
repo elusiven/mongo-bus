@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.Infrastructure;
 using MongoBus.Models;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace MongoBus.Internal;
@@ -99,7 +100,7 @@ internal sealed class MongoBusRuntime : BackgroundService
     private async Task FetchLoopAsync(EndpointRuntimeConfig cfg, string pumpId, ChannelWriter<InboxMessage> writer, CancellationToken ct)
     {
         var backoff = new FailureBackoff();
-        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, pumpId, ct);
+        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, LockOwnerFor(cfg, pumpId), ct);
 
         try
         {
@@ -120,6 +121,14 @@ internal sealed class MongoBusRuntime : BackgroundService
             writer.TryComplete();
         }
     }
+
+    /// <summary>
+    /// A renewing endpoint gives each lock its own owner: its fetch loop can re-lock a message whose lock lapsed while an
+    /// older copy still waits in the channel, and distinct owners let the dispatch-time re-claim skip the stale copy.
+    /// Other endpoints keep the pump id, so the first of their overlapping copies to finish still records the outcome.
+    /// </summary>
+    private static string LockOwnerFor(EndpointRuntimeConfig cfg, string pumpId) =>
+        cfg.RenewLock ? $"{pumpId}:{ObjectId.GenerateNewId()}" : pumpId;
 
     /// <returns>The locked message, or null when none is available or locking failed.</returns>
     private async Task<InboxMessage?> TryLockNextAsync(
