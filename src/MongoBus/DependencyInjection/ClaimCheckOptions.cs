@@ -22,8 +22,9 @@ public sealed class ClaimCheckCompressionOptions
     public string Algorithm { get; set; } = "gzip";
 
     /// <summary>
-    /// Maximum number of bytes a compressed claim-check payload may expand to when
-    /// decompressed. Guards against decompression bombs from untrusted publishers.
+    /// Maximum number of bytes of a claim-check payload a consumer reads, whether or not the
+    /// payload is compressed; for a compressed payload it limits the decompressed size.
+    /// Guards against oversized payloads and decompression bombs from untrusted publishers.
     /// Defaults to 100 MiB.
     /// </summary>
     public long MaxDecompressedBytes { get; set; } = 100L * 1024 * 1024;
