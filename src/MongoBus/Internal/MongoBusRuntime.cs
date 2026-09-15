@@ -98,11 +98,14 @@ internal sealed class MongoBusRuntime : BackgroundService
 
     private async Task FetchLoopAsync(EndpointRuntimeConfig cfg, string pumpId, ChannelWriter<InboxMessage> writer, CancellationToken ct)
     {
+        var backoff = new FailureBackoff();
+        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, pumpId, ct);
+
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                var msg = await _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, pumpId, ct);
+                var msg = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
                 if (msg is null)
                 {
                     await Task.Delay(50, ct);
@@ -115,6 +118,28 @@ internal sealed class MongoBusRuntime : BackgroundService
         finally
         {
             writer.TryComplete();
+        }
+    }
+
+    /// <returns>The locked message, or null when none is available or locking failed.</returns>
+    private async Task<InboxMessage?> TryLockNextAsync(
+        Func<Task<InboxMessage?>> lockNext,
+        FailureBackoff backoff,
+        string endpointId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var message = await lockNext();
+            backoff.Reset();
+            return message;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            var retryDelay = backoff.NextDelay();
+            _log.LogError(ex, "Could not lock the next message for endpoint {Endpoint}; retrying in {RetryDelay}", endpointId, retryDelay);
+            await Task.Delay(retryDelay, ct);
+            return null;
         }
     }
 
@@ -144,10 +169,13 @@ internal sealed class MongoBusRuntime : BackgroundService
 
     private async Task BatchWorkerLoopAsync(BatchRuntimeConfig cfg, string pumpId, SemaphoreSlim? limiter, CancellationToken ct)
     {
+        var backoff = new FailureBackoff();
+        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
+
         while (!ct.IsCancellationRequested)
         {
             var batchStart = DateTime.UtcNow;
-            var firstMsg = await _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
+            var firstMsg = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
             if (firstMsg is null)
             {
                 await Task.Delay(50, ct);
@@ -174,7 +202,7 @@ internal sealed class MongoBusRuntime : BackgroundService
                         break;
                 }
 
-                var next = await _pump.TryLockOneAsync(cfg.EndpointId, new[] { cfg.TypeId }, cfg.LockTime, pumpId, ct);
+                var next = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
                 if (next is null)
                 {
                     await Task.Delay(20, ct);
