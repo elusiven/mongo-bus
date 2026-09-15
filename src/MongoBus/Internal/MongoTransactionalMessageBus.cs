@@ -98,32 +98,31 @@ internal sealed class MongoTransactionalMessageBus(
         ArgumentNullException.ThrowIfNull(transactionCallback);
 
         using var session = await client.StartSessionAsync(cancellationToken: ct);
-        session.StartTransaction();
-        try
-        {
-            await transactionCallback(session, ct);
 
-            await PublishToOutboxAsync(
-                typeId,
-                data,
-                session,
-                source,
-                subject,
-                id,
-                timeUtc,
-                deliverAt,
-                correlationId,
-                causationId,
-                useClaimCheck,
-                ct);
+        // WithTransactionAsync runs the whole callback again after a TransientTransactionError (such as a write
+        // conflict with a concurrent transaction) and retries the commit after an UnknownTransactionCommitResult.
+        await session.WithTransactionAsync(
+            async (transactionSession, transactionCt) =>
+            {
+                await transactionCallback(transactionSession, transactionCt);
 
-            await session.CommitTransactionAsync(ct);
-        }
-        catch
-        {
-            await session.AbortTransactionAsync(ct);
-            throw;
-        }
+                await PublishToOutboxAsync(
+                    typeId,
+                    data,
+                    transactionSession,
+                    source,
+                    subject,
+                    id,
+                    timeUtc,
+                    deliverAt,
+                    correlationId,
+                    causationId,
+                    useClaimCheck,
+                    transactionCt);
+
+                return true;
+            },
+            cancellationToken: ct);
     }
 
     private async Task CorePublishToOutboxAsync<T>(IClientSessionHandle? session, PublishContext<T> publishContext, CancellationToken ct)
