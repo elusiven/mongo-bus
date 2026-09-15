@@ -135,11 +135,12 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         TInstance instance,
         IReadOnlyList<ISagaActivity<TInstance, TMessage>> behavior,
         bool isNew,
-        IMessageBus activityBus,
+        IMessageBus publishBus,
         CancellationToken ct)
     {
+        var buffered = new BufferedSagaMessageBus();
         var sagaContext = new SagaConsumeContext<TInstance, TMessage>(
-            instance, message, context, activityBus, ct);
+            instance, message, context, buffered, ct);
 
         var previousVersion = instance.Version;
         var previousState = instance.CurrentState;
@@ -148,7 +149,7 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
         foreach (var activity in behavior)
             await activity.ExecuteAsync(sagaContext);
 
-        await ApplyCompositeEventsAsync(instance, context, activityBus, ct);
+        await ApplyCompositeEventsAsync(instance, context, buffered, ct);
 
         instance.Version++;
         if (isNew)
@@ -168,6 +169,11 @@ internal sealed class SagaEventHandler<TInstance, TMessage>(
             logger.LogDebug("Saga {CorrelationId} completed, deleting instance", correlationId);
             await repository.DeleteAsync(correlationId, ct);
         }
+
+        // Without the outbox the state write and the publishes cannot be atomic. Publishing after the write means
+        // an attempt that loses the version check sends nothing; a crash between the two loses the messages,
+        // which is why UseOutbox is the option for exactly-once publishing.
+        await buffered.FlushAsync(publishBus, ct);
     }
 
     private async Task ProcessTransactionalAsync(

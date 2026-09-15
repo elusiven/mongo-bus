@@ -518,7 +518,7 @@ A saga event handler persists state **once**, at the end of the entire activity 
 
 **1. Intermediate writes to the saga instance are not durable until the chain finishes.** If the process crashes between activities, every mutation made to `ctx.Saga.*` during that handler is rolled back and the message redelivers. On the next attempt, the chain re-runs from activity #1.
 
-**2. `Publish` / `Send` activities fire mid-chain, before the saga write commits.** If the post-chain `UpdateAsync` then fails (Mongo blip, concurrency conflict), the outbound publishes have already escaped. On retry, they fire again.
+**2. `Publish` / `Send` / `Schedule` / `Request` messages are sent only after the saga write commits.** They are buffered while the chain runs. If the post-chain `UpdateAsync` fails (Mongo blip, concurrency conflict), nothing is published, and the retry publishes once it persists the transition. Without `UseOutbox` the write and the publishes are not atomic, so a crash between the two loses the messages; `UseOutbox` writes them in the same transaction as the state.
 
 For pure state mutations and idempotent downstream consumers this is fine. It becomes load-bearing when a single saga event handler orchestrates **multiple non-idempotent external calls** — uploading media to Meta, charging a card, provisioning a VM. A mid-handler crash re-runs every external call from the start, and the external system has no way to know it's seen the request before.
 
