@@ -56,7 +56,7 @@ public sealed class AzureBlobClaimCheckProvider : IClaimCheckProvider
 
     public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, cancellationToken: ct))
+        await foreach (var item in _container.GetBlobsAsync(BlobTraits.Metadata, BlobStates.None, prefix: null, cancellationToken: ct))
         {
             DateTime? createdAt = item.Properties.CreatedOn?.UtcDateTime;
             var metadata = item.Metadata;
