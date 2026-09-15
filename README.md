@@ -14,7 +14,7 @@ A MongoDB-backed message bus for .NET using CloudEvents for polyglot interop.
 - **Fan-out Support**: A single published message can be delivered to multiple distinct endpoints/consumers.
 - **Configurable Retries**: Exponential backoff with per-consumer configurable retry limits.
 - **Dead Letter Handling**: Failed messages that exceed retry limits are marked as `Dead` with full exception details stored for debugging.
-- **Automatic Index Management**: Self-healing index creation on startup, including TTL indexes for automatic cleanup of processed messages (configurable, default 7 days).
+- **Automatic Index Management**: Self-healing index creation on startup, including TTL indexes that remove messages a configurable time after they are processed (default 7 days). Pending, delayed and dead-lettered messages are never expired.
 - **Default Source**: Configure a default `source` for all published messages at the bus level.
 - **Message Correlation**: Automatic propagation of `CorrelationId` and `CausationId` across message flows for better traceability.
 - **Idempotency**: Built-in support for message deduplication at the consumer level based on CloudEvent `id`.
@@ -253,10 +253,10 @@ MongoBus can automatically offload large message payloads to external blob stora
 
 #### TTL and Cleanup
 
-By default, `InboxMessage` documents are automatically cleaned up from MongoDB after they are processed (default 7 days after creation). To prevent storage leaks, MongoBus also manages the cleanup of offloaded payloads:
+By default, `InboxMessage` documents are automatically removed from MongoDB 7 days after they are processed (`ProcessedMessageTtl`, enforced by a TTL index on `ProcessedUtc`). Pending, delayed and dead-lettered messages are kept until they are handled. To prevent storage leaks, MongoBus also manages the cleanup of offloaded payloads:
 
-- **Automatic Cleanup**: A background service (`ClaimCheckCleanupService`) periodically identifies and deletes offloaded payloads that are no longer referenced by any message in the system.
-- **TTL for GridFS**: When using MongoDB GridFS, a native TTL index is automatically created on the files collection to ensure data is removed even if the background service is not running.
+- **Automatic Cleanup**: A background service (`ClaimCheckCleanupService`) periodically identifies and deletes offloaded payloads that are no longer referenced by any message in the system. This applies to every provider, including GridFS.
+- **Upgrading**: Earlier versions expired inbox and outbox documents by `CreatedUtc` and added a TTL index to every GridFS `*.files` collection, which could delete messages and payloads that had not been handled yet. Those indexes are removed on startup.
 - **Configuration**: You can tune the cleanup interval and safety margin:
   ```csharp
   services.AddMongoBus(opt => {

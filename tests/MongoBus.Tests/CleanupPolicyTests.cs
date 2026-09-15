@@ -41,12 +41,11 @@ public class CleanupPolicyTests(MongoDbFixture fixture)
             var inbox = db.GetCollection<InboxMessage>("bus_inbox");
             var indexes = await (await inbox.Indexes.ListAsync()).ToListAsync();
             
-            // Find the TTL index on CreatedUtc
-            var ttlIndex = indexes.FirstOrDefault(idx => 
-                idx.Contains("expireAfterSeconds") && 
-                idx["key"].AsBsonDocument.Contains("CreatedUtc"));
+            var ttlIndex = indexes.FirstOrDefault(idx =>
+                idx.Contains("expireAfterSeconds") &&
+                idx["key"].AsBsonDocument.Contains("ProcessedUtc"));
 
-            ttlIndex.Should().NotBeNull("TTL index on CreatedUtc should exist");
+            ttlIndex.Should().NotBeNull("TTL index on ProcessedUtc should exist");
             ttlIndex!["expireAfterSeconds"].ToDouble().Should().Be(customTtl.TotalSeconds);
         }
         finally

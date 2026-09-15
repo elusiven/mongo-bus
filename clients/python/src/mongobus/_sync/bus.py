@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from pymongo import MongoClient
+from pymongo.errors import OperationFailure
 
 from .. import constants, context, documents, envelope, indexes, queries
 from ..claimcheck import core as claimcheck_core
@@ -36,10 +37,27 @@ class MongoBus:
         self._indexes_ensured = True
 
     def _create_indexes(self, *, processed_message_ttl: timedelta | None) -> None:
-        for keys, options in indexes.inbox_index_specs(processed_message_ttl=processed_message_ttl):
-            self._inbox.create_index(keys, **options)
+        self._drop_legacy_retention_index()
+        for spec in indexes.inbox_index_specs(processed_message_ttl=processed_message_ttl):
+            self._create_or_update_inbox_index(spec)
         keys, options = indexes.bindings_index_spec()
         self._bindings.create_index(keys, **options)
+
+    def _drop_legacy_retention_index(self) -> None:
+        for name, info in self._inbox.index_information().items():
+            if indexes.is_legacy_retention_index(info):
+                self._inbox.drop_index(name)
+
+    def _create_or_update_inbox_index(self, spec: indexes.IndexSpec) -> None:
+        keys, options = spec
+        try:
+            self._inbox.create_index(keys, **options)
+        except OperationFailure as error:
+            if not indexes.is_retention_window_conflict(error.code, options):
+                raise
+            self._db.command(
+                "collMod", constants.INBOX_COLLECTION, index=indexes.retention_window_update(spec)
+            )
 
     def _auto_ensure_indexes(self) -> None:
         if not self._indexes_ensured:

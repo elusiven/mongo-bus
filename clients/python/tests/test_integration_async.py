@@ -293,12 +293,34 @@ async def test_async_ensure_indexes_creates_inbox_and_binding_indexes(db):
     keys = _index_key_lists(inbox)
     assert [("EndpointId", 1), ("Status", 1), ("VisibleUtc", 1), ("LockedUntilUtc", 1)] in keys
     assert [("EndpointId", 1), ("CloudEventId", 1)] in keys
-    assert [("CreatedUtc", 1)] in keys
+    assert [("ProcessedUtc", 1)] in keys
     assert _ttl_seconds(inbox) == [7 * 24 * 60 * 60]
 
     bindings = await client[name]["bus_bindings"].index_information()
     unique = [m for m in bindings.values() if list(m["key"]) == [("Topic", 1), ("EndpointId", 1)]]
     assert unique and unique[0].get("unique") is True
+
+
+async def test_async_ensure_indexes_with_different_ttl_updates_retention_window(db):
+    client, name = db
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+
+    await bus.ensure_indexes(processed_message_ttl=timedelta(days=7))
+    await bus.ensure_indexes(processed_message_ttl=timedelta(days=30))
+
+    assert _ttl_seconds(await client[name]["bus_inbox"].index_information()) == [30 * 24 * 60 * 60]
+
+
+async def test_async_ensure_indexes_removes_legacy_created_utc_ttl_index(db):
+    client, name = db
+    await client[name]["bus_inbox"].create_index([("CreatedUtc", 1)], expireAfterSeconds=7 * 24 * 60 * 60)
+    bus = AsyncMongoBus(uri="", database=name, client=client)
+
+    await bus.ensure_indexes()
+
+    info = await client[name]["bus_inbox"].index_information()
+    ttl_keys = [list(meta["key"]) for meta in info.values() if "expireAfterSeconds" in meta]
+    assert ttl_keys == [[("ProcessedUtc", 1)]]
 
 
 async def test_async_run_once_auto_creates_lock_and_dedup_without_ttl(db):
