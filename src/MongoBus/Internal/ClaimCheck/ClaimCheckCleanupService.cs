@@ -1,8 +1,7 @@
-﻿using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.DependencyInjection;
-using MongoBus.Infrastructure;
 using MongoBus.Models;
 using MongoDB.Driver;
 
@@ -12,13 +11,16 @@ internal sealed class ClaimCheckCleanupService(
     MongoBusOptions options,
     IEnumerable<IClaimCheckProvider> providers,
     IMongoDatabase db,
+    ICloudEventSerializer serializer,
     ILogger<ClaimCheckCleanupService> log) : BackgroundService
 {
-    private readonly IMongoCollection<InboxMessage> _inbox = db.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
+    private readonly IReadOnlyList<IClaimCheckProvider> _providers = providers.ToList();
+    private readonly ClaimCheckReferenceReader _references = new(db, serializer, log);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!options.ClaimCheck.Enabled || !options.ClaimCheck.Cleanup.Enabled)
+        // Not gated on ClaimCheck.Enabled: a message can still request a claim check when it is off.
+        if (!options.ClaimCheck.Cleanup.Enabled || _providers.Count == 0)
         {
             return;
         }
@@ -42,42 +44,52 @@ internal sealed class ClaimCheckCleanupService(
     {
         log.LogInformation("Starting claim-check cleanup...");
 
-        var now = DateTime.UtcNow;
-        var minAge = options.ClaimCheck.Cleanup.MinimumAge;
-        var threshold = now - minAge;
-
-        foreach (var provider in providers)
-        {
-            if (ct.IsCancellationRequested) break;
-
-            log.LogDebug("Cleaning up provider: {ProviderName}", provider.Name);
-
-            await foreach (var reference in provider.ListAsync(ct))
-            {
-                if (reference.CreatedAt.HasValue && reference.CreatedAt.Value > threshold)
-                {
-                    // Too young to die
-                    continue;
-                }
-
-                // Double check if it's still referenced in Mongo.
-                // This is a safety measure. If fan-out exists, at least one endpoint might still need it.
-                // However, we look for ANY reference to this specific KEY in the entire inbox.
-                
-                // Optimization: if there are many references, this might be slow.
-                // But this service runs in background and only for OLD items.
-                
-                var isReferenced = await _inbox.Find(x => x.PayloadJson.Contains(reference.Key)).AnyAsync(ct);
-                if (!isReferenced)
-                {
-                    log.LogInformation("Deleting orphaned claim-check: {Provider}/{Key} created at {CreatedAt}", 
-                        provider.Name, reference.Key, reference.CreatedAt);
-                    
-                    await provider.DeleteAsync(reference, ct);
-                }
-            }
-        }
+        var expiredPayloads = await ListExpiredPayloadsAsync(ct);
+        foreach (var orphanedPayload in await ExcludeReferencedAsync(expiredPayloads, ct))
+            await DeleteAsync(orphanedPayload, ct);
 
         log.LogInformation("Claim-check cleanup finished.");
     }
+
+    private async Task<IReadOnlyList<StoredPayload>> ListExpiredPayloadsAsync(CancellationToken ct)
+    {
+        var createdBefore = DateTime.UtcNow - options.ClaimCheck.Cleanup.MinimumAge;
+        var expiredPayloads = new List<StoredPayload>();
+
+        foreach (var provider in _providers)
+        {
+            await foreach (var reference in provider.ListAsync(ct))
+            {
+                if (IsCreatedBefore(reference, createdBefore))
+                    expiredPayloads.Add(new StoredPayload(provider, reference));
+            }
+        }
+
+        return expiredPayloads;
+    }
+
+    private static bool IsCreatedBefore(ClaimCheckReference reference, DateTime createdBefore) =>
+        reference.CreatedAt is not { } createdAt || createdAt <= createdBefore;
+
+    private async Task<IReadOnlyList<StoredPayload>> ExcludeReferencedAsync(IReadOnlyList<StoredPayload> payloads, CancellationToken ct)
+    {
+        if (payloads.Count == 0)
+            return payloads;
+
+        var unreferencedKeys = payloads.Select(payload => payload.Reference.Key).ToHashSet(StringComparer.Ordinal);
+        await foreach (var referencedKey in _references.ReadReferencedKeysAsync(ct))
+            unreferencedKeys.Remove(referencedKey);
+
+        return payloads.Where(payload => unreferencedKeys.Contains(payload.Reference.Key)).ToList();
+    }
+
+    private async Task DeleteAsync(StoredPayload payload, CancellationToken ct)
+    {
+        log.LogInformation("Deleting orphaned claim-check: {Provider}/{Key} created at {CreatedAt}",
+            payload.Provider.Name, payload.Reference.Key, payload.Reference.CreatedAt);
+
+        await payload.Provider.DeleteAsync(payload.Reference, ct);
+    }
+
+    private sealed record StoredPayload(IClaimCheckProvider Provider, ClaimCheckReference Reference);
 }

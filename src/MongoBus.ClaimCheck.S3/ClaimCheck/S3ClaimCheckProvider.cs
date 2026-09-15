@@ -11,11 +11,13 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
 {
     private readonly S3ClaimCheckOptions _options;
     private readonly IAmazonS3 _client;
+    private readonly string? _keyPrefix;
 
     public S3ClaimCheckProvider(S3ClaimCheckOptions options)
     {
         _options = options;
         _client = new AmazonS3Client(options.AccessKey, options.SecretKey, S3ClientConfiguration.Create(options));
+        _keyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix) ? null : options.KeyPrefix.TrimEnd('/') + "/";
     }
 
     public string Name => _options.ProviderName;
@@ -64,7 +66,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
         var request = new ListObjectsV2Request
         {
             BucketName = _options.BucketName,
-            Prefix = _options.KeyPrefix
+            Prefix = _keyPrefix
         };
 
         ListObjectsV2Response response;
@@ -73,7 +75,9 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
             response = await _client.ListObjectsV2Async(request, ct);
             foreach (var s3Object in response.S3Objects ?? [])
             {
-                // ListObjectsV2 returns no user metadata; fetching it would cost one request per object.
+                if (!IsNamedLikeClaimCheck(s3Object.Key))
+                    continue;
+
                 yield return new ClaimCheckReference(
                     Provider: Name,
                     Container: _options.BucketName,
@@ -86,11 +90,12 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
         } while (response.IsTruncated == true);
     }
 
-    private string BuildKey()
-    {
-        var prefix = string.IsNullOrWhiteSpace(_options.KeyPrefix) ? "" : _options.KeyPrefix!.TrimEnd('/') + "/";
-        return $"{prefix}{Guid.NewGuid():N}";
-    }
+    private string BuildKey() => $"{_keyPrefix}{Guid.NewGuid():N}";
+
+    // The bucket may hold objects other applications wrote. ListObjectsV2 returns no user metadata, and fetching it
+    // would cost one request per object, so MongoBus payloads are recognised by the key BuildKey gives them instead.
+    private bool IsNamedLikeClaimCheck(string key) =>
+        Guid.TryParseExact(key.AsSpan(_keyPrefix?.Length ?? 0), "N", out _);
 
     private sealed class ResponseStream : Stream
     {

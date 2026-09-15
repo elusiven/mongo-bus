@@ -255,7 +255,9 @@ MongoBus can automatically offload large message payloads to external blob stora
 
 By default, `InboxMessage` documents are automatically removed from MongoDB 7 days after they are processed (`ProcessedMessageTtl`, enforced by a TTL index on `ProcessedUtc`). Pending, delayed and dead-lettered messages are kept until they are handled. To prevent storage leaks, MongoBus also manages the cleanup of offloaded payloads:
 
-- **Automatic Cleanup**: A background service (`ClaimCheckCleanupService`) periodically identifies and deletes offloaded payloads that are no longer referenced by any message in the system. This applies to every provider, including GridFS.
+- **Automatic Cleanup**: A background service (`ClaimCheckCleanupService`) periodically deletes offloaded payloads older than `MinimumAge` that no message in `bus_inbox` or `bus_outbox` references, so payloads of delayed outbox messages are kept until they are relayed. It runs whenever a claim-check provider is registered and `Cleanup.Enabled` is true, even when `ClaimCheck.Enabled` is false, because a message can request a claim check on its own (`useClaimCheck: true`). This applies to every provider, including GridFS.
+- **Shared storage**: Cleanup only considers payloads MongoBus stored: Azure blobs under `BlobPrefix` that carry MongoBus metadata, S3 objects under `KeyPrefix` whose name is the prefix followed by a GUID, and GridFS files that carry MongoBus metadata. Objects other applications keep in the same bucket or container are left alone. Give each bus its own bucket, container or prefix: a bus deletes payloads its own database does not reference. Publishers using another client must use the same prefix, ending in `/`.
+- **Cost**: Each run lists the stored payloads. When some are older than `MinimumAge`, it reads the claim-check messages in `bus_inbox` and `bus_outbox` once (a collection scan filtered on the payload text) and holds the keys of those expired payloads in memory while it does.
 - **Upgrading**: Earlier versions expired inbox and outbox documents by `CreatedUtc` and added a TTL index to every GridFS `*.files` collection, which could delete messages and payloads that had not been handled yet. Those indexes are removed on startup.
 - **Configuration**: You can tune the cleanup interval and safety margin:
   ```csharp
@@ -336,6 +338,8 @@ Implement `IClaimCheckProvider` and register it:
 ```csharp
 builder.Services.AddMongoBusClaimCheckProvider<MyClaimCheckProvider>();
 ```
+
+`ListAsync` must return only the payloads your provider stored: cleanup deletes every listed payload older than `MinimumAge` that no message references.
 
 > Note: If your handler uses `Stream` as the message type, the stream is passed through directly and must be disposed by the handler.
 

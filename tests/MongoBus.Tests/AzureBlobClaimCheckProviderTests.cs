@@ -1,4 +1,5 @@
 using System.Text;
+using Azure.Storage.Blobs;
 using FluentAssertions;
 using MongoBus.Abstractions;
 using MongoBus.ClaimCheck;
@@ -49,12 +50,43 @@ public class AzureBlobClaimCheckProviderTests(AzuriteFixture azurite) : IClassFi
         listed.CreatedAt!.Value.Kind.Should().Be(DateTimeKind.Utc);
     }
 
-    private AzureBlobClaimCheckProvider CreateProvider() =>
+    [Fact]
+    public async Task ListAsync_WithBlobPrefix_ShouldSkipBlobsOutsideThePrefix()
+    {
+        var containerName = NewContainerName();
+        var provider = CreateProvider(containerName, blobPrefix: "claims");
+        var providerUnderSiblingPrefix = CreateProvider(containerName, blobPrefix: "claims-archive");
+        var stored = await provider.PutAsync(WriteRequest("payload", MongoBusMetadata()), CancellationToken.None);
+        await providerUnderSiblingPrefix.PutAsync(WriteRequest("archived payload", MongoBusMetadata()), CancellationToken.None);
+
+        var listed = await ListReferencesAsync(provider);
+
+        listed.Select(x => x.Key).Should().Equal(stored.Key);
+    }
+
+    [Fact]
+    public async Task ListAsync_ShouldSkipBlobsWithoutMongoBusMetadata()
+    {
+        var containerName = NewContainerName();
+        var provider = CreateProvider(containerName);
+        var stored = await provider.PutAsync(WriteRequest("payload", MongoBusMetadata()), CancellationToken.None);
+        await new BlobContainerClient(azurite.ConnectionString, containerName)
+            .UploadBlobAsync("reports/2026-09.csv", BinaryData.FromString("month,total"));
+
+        var listed = await ListReferencesAsync(provider);
+
+        listed.Select(x => x.Key).Should().Equal(stored.Key);
+    }
+
+    private AzureBlobClaimCheckProvider CreateProvider(string? containerName = null, string? blobPrefix = null) =>
         new(new AzureBlobClaimCheckOptions
         {
             ConnectionString = azurite.ConnectionString,
-            ContainerName = "claims-" + Guid.NewGuid().ToString("N")
+            ContainerName = containerName ?? NewContainerName(),
+            BlobPrefix = blobPrefix
         });
+
+    private static string NewContainerName() => "claims-" + Guid.NewGuid().ToString("N");
 
     private static Dictionary<string, string> MongoBusMetadata() => new()
     {

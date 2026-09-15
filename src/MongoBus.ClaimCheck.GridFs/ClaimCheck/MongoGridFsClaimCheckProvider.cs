@@ -9,6 +9,10 @@ namespace MongoBus.ClaimCheck;
 
 public sealed class MongoGridFsClaimCheckProvider(IMongoDatabase database, string bucketName = "claimcheck") : IClaimCheckProvider
 {
+    // The bucket may hold files other applications wrote; MongoBus marks every payload it stores with its creation time.
+    private static readonly FilterDefinition<GridFSFileInfo> StoredByMongoBus =
+        Builders<GridFSFileInfo>.Filter.Exists($"metadata.{ClaimCheckConstants.CreatedAtMetadataKey}");
+
     private readonly IGridFSBucket _bucket = new GridFSBucket(database, new GridFSBucketOptions
     {
         BucketName = bucketName
@@ -68,8 +72,7 @@ public sealed class MongoGridFsClaimCheckProvider(IMongoDatabase database, strin
 
     public async IAsyncEnumerable<ClaimCheckReference> ListAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        var filter = Builders<GridFSFileInfo>.Filter.Empty;
-        using var cursor = await _bucket.FindAsync(filter, cancellationToken: ct);
+        using var cursor = await _bucket.FindAsync(StoredByMongoBus, cancellationToken: ct);
         while (await cursor.MoveNextAsync(ct))
         {
             foreach (var file in cursor.Current)

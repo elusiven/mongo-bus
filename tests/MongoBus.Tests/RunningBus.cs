@@ -27,7 +27,8 @@ internal sealed class RunningBus : IAsyncDisposable
     public static async Task<RunningBus> StartAsync(
         string connectionString,
         Action<MongoBusOptions>? configureOptions = null,
-        Action<IServiceCollection>? registerServices = null)
+        Action<IServiceCollection>? registerServices = null,
+        Func<IServiceProvider, Task>? beforeStart = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -40,6 +41,9 @@ internal sealed class RunningBus : IAsyncDisposable
         registerServices?.Invoke(services);
 
         var provider = services.BuildServiceProvider();
+        if (beforeStart is not null)
+            await beforeStart(provider);
+
         var started = new List<IHostedService>();
         try
         {
