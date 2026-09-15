@@ -42,9 +42,8 @@ public sealed class MongoGridFsClaimCheckProvider(IMongoDatabase database, strin
             Metadata = metadata
         };
 
-        await _bucket.UploadFromStreamAsync(key, request.Data, options, ct);
-
-        long length = request.Length ?? 0;
+        var fileId = await _bucket.UploadFromStreamAsync(key, request.Data, options, ct);
+        var length = request.Length ?? await StoredLengthAsync(fileId, ct);
 
         return new ClaimCheckReference(
             Provider: Name,
@@ -53,6 +52,12 @@ public sealed class MongoGridFsClaimCheckProvider(IMongoDatabase database, strin
             Length: length,
             ContentType: request.ContentType,
             Metadata: request.Metadata);
+    }
+
+    private async Task<long> StoredLengthAsync(ObjectId fileId, CancellationToken ct)
+    {
+        var storedFile = await _bucket.Find(Builders<GridFSFileInfo>.Filter.Eq(x => x.Id, fileId)).FirstAsync(ct);
+        return storedFile.Length;
     }
 
     public async Task<Stream> OpenReadAsync(ClaimCheckReference reference, CancellationToken ct)

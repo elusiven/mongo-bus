@@ -29,6 +29,17 @@ public class GridFsClaimCheckProviderTests(MongoDbFixture fixture)
         listed.Select(x => x.Key).Should().Equal(stored.Key);
     }
 
+    [Fact]
+    public async Task PutAsync_WithoutAKnownLength_ShouldReportTheNumberOfBytesStored()
+    {
+        const string payload = "{\"value\":\"stored without a declared length\"}";
+        var provider = new MongoGridFsClaimCheckProvider(CreateDatabase(), BucketName);
+
+        var stored = await provider.PutAsync(WriteRequest(payload), CancellationToken.None);
+
+        stored.Length.Should().Be(Encoding.UTF8.GetByteCount(payload));
+    }
+
     private IMongoDatabase CreateDatabase() =>
         new MongoClient(fixture.ConnectionString).GetDatabase("gridfs_provider_" + Guid.NewGuid().ToString("N"));
 
