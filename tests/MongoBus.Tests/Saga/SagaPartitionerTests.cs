@@ -44,23 +44,25 @@ public class SagaPartitionerTests
     }
 
     [Fact]
-    public async Task AcquireAsync_DifferentKeys_CanRunConcurrently()
+    public async Task AcquireAsync_KeysInDifferentPartitions_CanRunConcurrently()
     {
-        var partitioner = new SagaPartitioner(4);
+        const int partitionCount = 4;
+        var partitioner = new SagaPartitioner(partitionCount);
+        var (firstKey, secondKey) = KeysInDifferentPartitions(partitionCount);
         var acquired = new List<string>();
         var gate = new ManualResetEventSlim(false);
 
         var task1 = Task.Run(async () =>
         {
-            using var lock1 = await partitioner.AcquireAsync("key-x", CancellationToken.None);
-            lock (acquired) { acquired.Add("key-x"); }
+            using var lock1 = await partitioner.AcquireAsync(firstKey, CancellationToken.None);
+            lock (acquired) { acquired.Add(firstKey); }
             gate.Wait(TimeSpan.FromSeconds(5));
         });
 
         var task2 = Task.Run(async () =>
         {
-            using var lock2 = await partitioner.AcquireAsync("key-y", CancellationToken.None);
-            lock (acquired) { acquired.Add("key-y"); }
+            using var lock2 = await partitioner.AcquireAsync(secondKey, CancellationToken.None);
+            lock (acquired) { acquired.Add(secondKey); }
             gate.Wait(TimeSpan.FromSeconds(5));
         });
 
@@ -69,12 +71,27 @@ public class SagaPartitionerTests
 
         lock (acquired)
         {
-            acquired.Should().HaveCount(2, "both keys should be acquired concurrently without blocking");
-            acquired.Should().Contain("key-x");
-            acquired.Should().Contain("key-y");
+            acquired.Should().HaveCount(2, "keys in different partitions should be acquired concurrently without blocking");
+            acquired.Should().Contain(firstKey);
+            acquired.Should().Contain(secondKey);
         }
 
         gate.Set();
         await Task.WhenAll(task1, task2);
+    }
+
+    /// <summary>
+    /// String hash codes are randomised per process, so two fixed keys share a partition in some test runs.
+    /// Choosing the second key by its partition in this process keeps the test deterministic.
+    /// </summary>
+    private static (string First, string Second) KeysInDifferentPartitions(int partitionCount)
+    {
+        const string firstKey = "key-0";
+        var firstPartition = SagaPartitioner.GetPartitionIndex(firstKey.GetHashCode(), partitionCount);
+        var secondKey = Enumerable.Range(1, 1000)
+            .Select(i => $"key-{i}")
+            .First(key => SagaPartitioner.GetPartitionIndex(key.GetHashCode(), partitionCount) != firstPartition);
+
+        return (firstKey, secondKey);
     }
 }
