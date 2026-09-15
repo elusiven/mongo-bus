@@ -67,22 +67,14 @@ internal sealed class ClaimCheckManager(
 
     public async Task<object> ResolveAsync(ClaimCheckReference reference, Type messageType, CancellationToken ct)
     {
-        var provider = providerResolver.GetProviderForReference(reference);
-        var stream = await provider.OpenReadAsync(reference, ct);
-
-        if (reference.Metadata != null && reference.Metadata.TryGetValue(ClaimCheckConstants.CompressionMetadataKey, out var algorithm))
-        {
-            var compressor = compressorProvider.GetCompressor(algorithm);
-            var decompressed = await compressor.DecompressAsync(stream, ct);
-            stream = new LimitedReadStream(decompressed, options.ClaimCheck.Compression.MaxDecompressedBytes);
-        }
+        var payload = new LimitedReadStream(await OpenPayloadAsync(reference, ct), options.ClaimCheck.Compression.MaxDecompressedBytes);
 
         if (typeof(Stream).IsAssignableFrom(messageType))
-            return stream;
+            return payload;
 
-        await using (stream)
+        await using (payload)
         {
-            return await serializer.DeserializeAsync(stream, messageType, ct);
+            return await serializer.DeserializeAsync(payload, messageType, ct);
         }
     }
 
@@ -90,6 +82,16 @@ internal sealed class ClaimCheckManager(
     {
         var provider = providerResolver.GetProviderForReference(reference);
         await provider.DeleteAsync(reference, ct);
+    }
+
+    private async Task<Stream> OpenPayloadAsync(ClaimCheckReference reference, CancellationToken ct)
+    {
+        var storedPayload = await providerResolver.GetProviderForReference(reference).OpenReadAsync(reference, ct);
+
+        if (reference.Metadata is null || !reference.Metadata.TryGetValue(ClaimCheckConstants.CompressionMetadataKey, out var algorithm))
+            return storedPayload;
+
+        return await compressorProvider.GetCompressor(algorithm).DecompressAsync(storedPayload, ct);
     }
 
     private bool ShouldAttemptClaimCheck<T>(PublishContext<T> context)

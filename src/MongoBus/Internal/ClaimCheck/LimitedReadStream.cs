@@ -2,9 +2,9 @@ namespace MongoBus.Internal.ClaimCheck;
 
 /// <summary>
 /// A read-only stream wrapper that throws once more than <c>maxBytes</c> have been read
-/// from the underlying stream. Used to bound decompression output and defend against
-/// decompression bombs, where a small compressed claim-check object expands to an
-/// arbitrarily large payload.
+/// from the underlying stream. Bounds how much of a claim-check payload a consumer reads,
+/// whether the payload is stored as is or is a small compressed object that expands to an
+/// arbitrarily large one (a decompression bomb).
 /// </summary>
 internal sealed class LimitedReadStream(Stream inner, long maxBytes) : Stream
 {
@@ -53,7 +53,7 @@ internal sealed class LimitedReadStream(Stream inner, long maxBytes) : Stream
         _read += n;
         if (_read > maxBytes)
             throw new InvalidDataException(
-                $"Decompressed claim-check payload exceeded the maximum allowed size of {maxBytes} bytes.");
+                $"Claim-check payload exceeded the maximum allowed size of {maxBytes} bytes (ClaimCheck.Compression.MaxDecompressedBytes).");
     }
 
     public override void Flush() => throw new NotSupportedException();

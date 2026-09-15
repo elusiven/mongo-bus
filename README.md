@@ -283,6 +283,8 @@ builder.Services.AddMongoBus(opt =>
 });
 ```
 
+Consumers read at most `ClaimCheck.Compression.MaxDecompressedBytes` (100 MiB by default) of a claim-check payload, whether or not it is compressed; for a compressed payload the limit applies to its decompressed size. A message whose payload is larger fails instead of being handled.
+
 #### MongoDB GridFS
 
 ```csharp
