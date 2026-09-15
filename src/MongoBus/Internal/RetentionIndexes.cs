@@ -4,9 +4,10 @@ using MongoDB.Driver;
 namespace MongoBus.Internal;
 
 /// <summary>
-/// Keeps the TTL indexes that expire handled messages in line with configuration, and removes
-/// the TTL indexes earlier versions created. Those expired documents by age alone, so pending,
-/// delayed and dead-lettered messages (and claim-check payloads they referenced) were deleted too.
+/// Keeps TTL retention indexes in line with configuration: a changed expiry is applied in place with collMod, because
+/// createIndexes rejects an existing index with different options, and an index is dropped when retention is turned off.
+/// Also removes the TTL indexes earlier versions created, which expired messages by age alone, so pending, delayed and
+/// dead-lettered messages (and claim-check payloads they referenced) were deleted too.
 /// </summary>
 internal static class RetentionIndexes
 {
@@ -16,28 +17,26 @@ internal static class RetentionIndexes
     private const string GridFsFilesCollectionSuffix = ".files";
     private static readonly TimeSpan LegacyGridFsTtlMargin = TimeSpan.FromDays(1);
 
-    public static async Task EnsureAsync<TDocument>(
+    public static Task EnsureAsync<TDocument>(
         IMongoCollection<TDocument> collection,
         string field,
         TimeSpan expireAfter,
-        CancellationToken ct)
-    {
-        var index = new CreateIndexModel<TDocument>(
-            Builders<TDocument>.IndexKeys.Ascending(field),
-            new CreateIndexOptions { ExpireAfter = expireAfter });
+        CancellationToken ct) =>
+        CreateOrUpdateExpiryAsync(collection, field, expireAfter, new CreateIndexOptions { ExpireAfter = expireAfter }, ct);
 
-        try
-        {
-            await collection.Indexes.CreateOneAsync(index, cancellationToken: ct);
-        }
-        catch (MongoCommandException ex) when (ex.Code == IndexOptionsConflict)
-        {
-            await UpdateExpiryAsync(collection, field, expireAfter, ct);
-        }
-    }
+    public static Task EnsureNamedAsync<TDocument>(
+        IMongoCollection<TDocument> collection,
+        string indexName,
+        string field,
+        TimeSpan expireAfter,
+        CancellationToken ct) =>
+        CreateOrUpdateExpiryAsync(collection, field, expireAfter, new CreateIndexOptions { Name = indexName, ExpireAfter = expireAfter }, ct);
+
+    public static Task DropAsync<TDocument>(IMongoCollection<TDocument> collection, string field, CancellationToken ct) =>
+        DropTtlIndexesAsync(collection, index => HasSingleKey(index, field), ct);
 
     public static Task DropLegacyMessageTtlIndexAsync<TDocument>(IMongoCollection<TDocument> collection, CancellationToken ct) =>
-        DropTtlIndexesAsync(collection, index => HasSingleKey(index, LegacyMessageTtlField), ct);
+        DropAsync(collection, LegacyMessageTtlField, ct);
 
     /// <summary>
     /// Earlier versions put a TTL index on <c>uploadDate</c> of every GridFS bucket in the database,
@@ -58,6 +57,25 @@ internal static class RetentionIndexes
                 filesCollection,
                 index => HasSingleKey(index, LegacyGridFsTtlField) && ExpireAfterSeconds(index) == legacyExpireAfterSeconds,
                 ct);
+        }
+    }
+
+    private static async Task CreateOrUpdateExpiryAsync<TDocument>(
+        IMongoCollection<TDocument> collection,
+        string field,
+        TimeSpan expireAfter,
+        CreateIndexOptions options,
+        CancellationToken ct)
+    {
+        var index = new CreateIndexModel<TDocument>(Builders<TDocument>.IndexKeys.Ascending(field), options);
+
+        try
+        {
+            await collection.Indexes.CreateOneAsync(index, cancellationToken: ct);
+        }
+        catch (MongoCommandException ex) when (ex.Code == IndexOptionsConflict)
+        {
+            await UpdateExpiryAsync(collection, field, expireAfter, ct);
         }
     }
 

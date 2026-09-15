@@ -149,4 +149,67 @@ public class SagaTtlTests(MongoDbFixture fixture)
             foreach (var hs in hosted) await hs.StopAsync(CancellationToken.None);
         }
     }
+
+    [Fact]
+    public async Task Changing_SagaInstanceTtl_Should_Update_The_Existing_Ttl_Index()
+    {
+        var dbName = "saga_ttl_change_" + Guid.NewGuid().ToString("N");
+        var firstDeployment = await StartSagaBusAsync(dbName, opt => opt.SagaInstanceTtl = TimeSpan.FromDays(1));
+        await firstDeployment.DisposeAsync();
+
+        await using var secondDeployment = await StartSagaBusAsync(dbName, opt => opt.SagaInstanceTtl = TimeSpan.FromDays(2));
+
+        (await TtlExpireAfterSecondsAsync(secondDeployment.Database, SagaCollectionName)).Should()
+            .Be((long)TimeSpan.FromDays(2).TotalSeconds);
+    }
+
+    [Fact]
+    public async Task Disabling_SagaInstanceTtl_Should_Remove_The_Ttl_Index()
+    {
+        var dbName = "saga_ttl_disable_" + Guid.NewGuid().ToString("N");
+        var firstDeployment = await StartSagaBusAsync(dbName, opt => opt.SagaInstanceTtl = TimeSpan.FromDays(1));
+        await firstDeployment.DisposeAsync();
+
+        await using var secondDeployment = await StartSagaBusAsync(dbName, _ => { });
+
+        (await TtlExpireAfterSecondsAsync(secondDeployment.Database, SagaCollectionName)).Should()
+            .BeNull("saga instances must stop expiring once SagaInstanceTtl is turned off");
+    }
+
+    [Fact]
+    public async Task Changing_HistoryTtl_Should_Update_The_Existing_Ttl_Index()
+    {
+        var dbName = "saga_history_ttl_change_" + Guid.NewGuid().ToString("N");
+        var firstDeployment = await StartSagaBusAsync(dbName, opt =>
+        {
+            opt.HistoryEnabled = true;
+            opt.HistoryTtl = TimeSpan.FromDays(7);
+        });
+        await firstDeployment.DisposeAsync();
+
+        await using var secondDeployment = await StartSagaBusAsync(dbName, opt =>
+        {
+            opt.HistoryEnabled = true;
+            opt.HistoryTtl = TimeSpan.FromDays(14);
+        });
+
+        (await TtlExpireAfterSecondsAsync(secondDeployment.Database, HistoryCollectionName)).Should()
+            .Be((long)TimeSpan.FromDays(14).TotalSeconds);
+    }
+
+    private const string SagaCollectionName = "bus_saga_ttl-test-state";
+    private const string HistoryCollectionName = "bus_saga_history_ttl-test-state";
+
+    private Task<RunningBus> StartSagaBusAsync(string databaseName, Action<SagaOptions> configureSaga) =>
+        RunningBus.StartAsync(
+            fixture.ConnectionString,
+            opt => opt.DatabaseName = databaseName,
+            services => services.AddMongoBusSaga<TtlStateMachine, TtlTestState>(configure: configureSaga));
+
+    private static async Task<long?> TtlExpireAfterSecondsAsync(IMongoDatabase db, string collectionName)
+    {
+        var indexes = await (await db.GetCollection<BsonDocument>(collectionName).Indexes.ListAsync()).ToListAsync();
+        var ttlIndex = indexes.FirstOrDefault(index => index.Contains("expireAfterSeconds"));
+        return ttlIndex?["expireAfterSeconds"].ToInt64();
+    }
 }
