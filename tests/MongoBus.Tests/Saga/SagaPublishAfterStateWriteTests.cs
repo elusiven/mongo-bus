@@ -124,8 +124,23 @@ public class SagaPublishAfterStateWriteTests(MongoDbFixture fixture)
         await WaitForStateAsync(sagas, correlationId, "Dispatched");
 
         var inbox = bus.Database.GetCollection<InboxMessage>(MongoBusConstants.InboxCollectionName);
+        await WaitForProcessedAsync(inbox, DispatchTypeId, correlationId);
         (await inbox.CountDocumentsAsync(x => x.TypeId == NoticeTypeId)).Should().Be(1,
             "the first attempt's state write lost to a concurrent change, so only the retry that persisted the transition may publish");
+    }
+
+    // The saga's publishes are sent after its state write, so reaching the new state does not mean the notice was sent;
+    // the dispatch event is marked processed only once its handler, including that publish, has returned.
+    private static async Task WaitForProcessedAsync(IMongoCollection<InboxMessage> inbox, string typeId, string correlationId)
+    {
+        var deadline = DateTime.UtcNow.Add(StateTimeout);
+        while (!await inbox.Find(x => x.TypeId == typeId && x.CorrelationId == correlationId && x.Status == "Processed").AnyAsync())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"The '{typeId}' message for saga {correlationId} was not processed within {StateTimeout}.");
+
+            await Task.Delay(100);
+        }
     }
 
     private static async Task WaitForStateAsync(IMongoCollection<ShipmentState> sagas, string correlationId, string state)
