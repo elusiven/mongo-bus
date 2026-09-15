@@ -1253,6 +1253,14 @@ Run at the repository root on `ef7d2fd` — the five task commits rebased onto `
   - About the run-1 failure: the test drives a consumer that does not set `RenewLock`, whose lock owner and dispatch path are unchanged from `main` (`git diff origin/main..HEAD -- src/MongoBus/Internal/MongoBusRuntime.cs`: `LockOwnerFor` returns the pump id and `DispatchAsync` calls the dispatcher directly when `RenewLock` is false). It passed 3 of 3 runs on its own and has no failures in the repository's CI history. It asserts 1–2 handler starts for a 1-second lock and a 2-second handler, which a slow outcome write under full-suite load can exceed. Reported to the session maintaining the test suite, which is rewriting that test on a separate test-only branch; not changed in this PR.
 - Per-task runs by the implementers: `LockRenewalConfigTests` 5/5; `LockRenewalTests` 5/5 in two consecutive runs; `MessageLockRenewerTests` 10/10 in three consecutive runs.
 
+After the review fixes, run again at the repository root on `5a39b23` — the ten branch commits rebased onto `origin/main` `2181640` (PR #51, which rewrote `ConcurrencyTests`) — on 2026-09-16:
+
+- `dotnet restore` → "All projects are up-to-date for restore."
+- `dotnet build --no-restore --no-incremental -c Release` → 0 Error(s), 345 Warning(s), unchanged from the base.
+- `dotnet test --no-build -c Release` → MongoBus.Dashboard.Tests 37/37 passed; **MongoBus.Tests 287/287 passed** (3 m 57 s).
+- Fix-cycle runs by the implementers: Fix 1's new shutdown test passed both runs and the Step 4 filter 23/23; Fix 2 proved both lock-taken tests fail when the owner-mismatch cancellation is removed, then 16/16 twice; Fix 3 proved the double-logging guard fails without its check, then 18/18; Fix 4 proved both give-up tests fail when the deadline is moved past the budget (3.52 s and 3.50 s against a 3.0 s budget), then passed 6 consecutive runs and `MessageLockRenewerTests` 12/12.
+- The two intermittent failures seen during this work are both accounted for: `ConcurrencyTests.MessageShouldNotBeProcessedByMultipleWorkersSimultaneously` was load-sensitive on a path this branch does not change and has since been rewritten on `main`; the lease give-up tests compared a monotonic deadline against a wall-clock expiry on a machine whose clock steps forward 1.41-1.81 s about every 33.8 s (WSL2 with `systemd-timesyncd`), which Fix 4 removes by measuring the watchdog's budget with a `Stopwatch`.
+
 Baseline before any change, at `8d04a75`: `dotnet build --no-restore -c Release` 0 errors / 282 warnings; `dotnet test --no-build -c Release` MongoBus.Tests 225/225, MongoBus.Dashboard.Tests 24/24. (At `dfb91e2`, `SagaPartitionerTests.AcquireAsync_DifferentKeys_CanRunConcurrently` failed 2 of 2 local runs because `SagaPartitioner` partitions on the per-process-randomized `string.GetHashCode()`; PR #29 on `5b2f2e0` addresses that test.)
 
 ## Review notes
