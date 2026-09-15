@@ -107,19 +107,37 @@ internal sealed class ClaimCheckManager(
             return new StreamInfo(stream, ClaimCheckConstants.DefaultStreamContentType, streamLength, false);
         }
 
-        var temp = await TempFile.CreateAsync();
-        await serializer.SerializeAsync(data!, temp.Stream, ct);
-        await temp.Stream.FlushAsync(ct);
+        var serialized = await SerializeToBufferAsync(data!, ct);
 
-        if (temp.Stream.Length < options.ClaimCheck.ThresholdBytes && context.UseClaimCheck != true)
+        if (serialized.Length < options.ClaimCheck.ThresholdBytes && context.UseClaimCheck != true)
         {
-            await temp.DisposeAsync();
+            await serialized.DisposeAsync();
             return null;
         }
 
-        temp.Stream.Position = 0;
-        return new StreamInfo(temp.Stream, ClaimCheckConstants.DefaultObjectContentType, temp.Stream.Length, true);
+        serialized.Position = 0;
+        return new StreamInfo(serialized, ClaimCheckConstants.DefaultObjectContentType, serialized.Length, true);
     }
+
+    private async Task<Stream> SerializeToBufferAsync(object data, CancellationToken ct)
+    {
+        var buffer = new SpillToDiskStream(InMemoryPayloadLimit, Path.GetTempPath());
+        try
+        {
+            await serializer.SerializeAsync(data, buffer, ct);
+            await buffer.FlushAsync(ct);
+            return buffer;
+        }
+        catch
+        {
+            await buffer.DisposeAsync();
+            throw;
+        }
+    }
+
+    // A payload under the threshold is stored inline, and an inline payload over MaxMessageSizeBytes is rejected,
+    // so every payload that can be stored inline stays off the disk while a large threshold cannot buffer more in memory.
+    private long InMemoryPayloadLimit => Math.Min(options.ClaimCheck.ThresholdBytes, options.MaxMessageSizeBytes);
 
     private static Dictionary<string, string> CreateMetadata() =>
         new()
@@ -131,27 +149,4 @@ internal sealed class ClaimCheckManager(
         reference.CreatedAt == null ? reference with { CreatedAt = DateTime.UtcNow } : reference;
 
     private sealed record StreamInfo(Stream Stream, string ContentType, long? Length, bool ShouldDispose);
-
-    private sealed class TempFile : IAsyncDisposable
-    {
-        public FileStream Stream { get; }
-
-        private TempFile(FileStream stream)
-        {
-            Stream = stream;
-        }
-
-        public static Task<TempFile> CreateAsync()
-        {
-            var path = Path.Combine(Path.GetTempPath(), $"mongobus-claimcheck-{Guid.NewGuid():N}.json");
-            var stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
-            return Task.FromResult(new TempFile(stream));
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            Stream.Dispose();
-            return ValueTask.CompletedTask;
-        }
-    }
 }
