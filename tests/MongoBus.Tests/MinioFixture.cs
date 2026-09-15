@@ -8,7 +8,8 @@ public class MinioFixture : IAsyncLifetime
 {
     // Deliberately an older release without AWS flexible-checksum support, standing in for
     // S3-compatible stores that reject the checksums AWS SDK v4 sends by default.
-    private readonly MinioContainer _container = new MinioBuilder("minio/minio:RELEASE.2023-01-31T02-24-19Z")
+    // Pulled from Quay because MinIO no longer publishes the minio/minio repository on Docker Hub.
+    private readonly MinioContainer _container = new MinioBuilder("quay.io/minio/minio:RELEASE.2023-01-31T02-24-19Z")
         .Build();
 
     public string ServiceUrl => _container.GetConnectionString();
