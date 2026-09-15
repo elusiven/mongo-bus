@@ -16,14 +16,27 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     public S3ClaimCheckProvider(S3ClaimCheckOptions options)
     {
         _options = options;
-        var config = new AmazonS3Config
-        {
-            ServiceURL = options.ServiceUrl,
-            ForcePathStyle = options.ForcePathStyle,
-            RegionEndpoint = string.IsNullOrWhiteSpace(options.Region) ? null : RegionEndpoint.GetBySystemName(options.Region)
-        };
+        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, CreateClientConfig(options));
+    }
 
-        _client = new AmazonS3Client(options.AccessKey, options.SecretKey, config);
+    private static AmazonS3Config CreateClientConfig(S3ClaimCheckOptions options)
+    {
+        var config = new AmazonS3Config { ForcePathStyle = options.ForcePathStyle };
+
+        // ServiceURL and RegionEndpoint are mutually exclusive: assigning RegionEndpoint (even null)
+        // discards a previously assigned ServiceURL. With a custom endpoint the region is only used for signing.
+        if (!string.IsNullOrWhiteSpace(options.ServiceUrl))
+        {
+            config.ServiceURL = options.ServiceUrl;
+            if (!string.IsNullOrWhiteSpace(options.Region))
+                config.AuthenticationRegion = options.Region;
+        }
+        else if (!string.IsNullOrWhiteSpace(options.Region))
+        {
+            config.RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region);
+        }
+
+        return config;
     }
 
     public string Name => _options.ProviderName;
@@ -31,6 +44,8 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
     public async Task<ClaimCheckReference> PutAsync(ClaimCheckWriteRequest request, CancellationToken ct)
     {
         var key = BuildKey();
+        // Measured before uploading because the SDK closes the input stream once the upload completes.
+        var length = request.Length ?? (request.Data.CanSeek ? request.Data.Length : 0);
 
         var put = new PutObjectRequest
         {
@@ -48,7 +63,6 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
 
         await _client.PutObjectAsync(put, ct);
 
-        var length = request.Length ?? (request.Data.CanSeek ? request.Data.Length : 0);
         return new ClaimCheckReference(Name, _options.BucketName, key, length, request.ContentType, request.Metadata);
     }
 
