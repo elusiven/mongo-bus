@@ -12,11 +12,14 @@ internal sealed class MessageLockLease : IAsyncDisposable
     private readonly CancellationTokenSource _lockLost = new();
     private readonly CancellationTokenSource _stopRenewing;
     private readonly Task _renewing;
+    private readonly CancellationTokenRegistration _givingUpReport;
+    private volatile bool _lockTakenReported;
 
     private MessageLockLease(
         MessageLockRenewer renewer, InboxMessage message, TimeSpan lockTime, DateTime claimedAt, ILogger log)
     {
         _stopRenewing = new CancellationTokenSource();
+        _givingUpReport = _lockLost.Token.Register(() => ReportGivingUp(message, log));
         GiveUpBeforeExpiry(claimedAt, lockTime);
         _renewing = RenewUntilStoppedAsync(renewer, message, lockTime, log, _stopRenewing.Token);
     }
@@ -63,6 +66,7 @@ internal sealed class MessageLockLease : IAsyncDisposable
                     continue;
                 }
 
+                _lockTakenReported = true;
                 log.LogWarning(
                     "Delivery no longer holds the lock on message {MessageId} on endpoint {EndpointId}; cancelling its dispatch.",
                     message.Id, message.EndpointId);
@@ -77,14 +81,29 @@ internal sealed class MessageLockLease : IAsyncDisposable
             {
                 log.LogWarning(
                     ex,
-                    "Could not renew the lock on message {MessageId}; its dispatch is cancelled if the lock nears expiry first.",
-                    message.Id);
+                    "Could not renew the lock on message {MessageId} on endpoint {EndpointId}; its dispatch is cancelled if the lock nears expiry first.",
+                    message.Id, message.EndpointId);
             }
         }
     }
 
+    /// <summary>
+    /// Runs when <see cref="LockLost"/> is cancelled. The lock-taken branch logs its own warning; any other cancellation
+    /// comes from the watchdog, and without this warning it would look like an ordinary shutdown in the logs.
+    /// </summary>
+    private void ReportGivingUp(InboxMessage message, ILogger log)
+    {
+        if (_lockTakenReported)
+            return;
+
+        log.LogWarning(
+            "The lock on message {MessageId} on endpoint {EndpointId} could not be renewed before it neared expiry; cancelling its dispatch.",
+            message.Id, message.EndpointId);
+    }
+
     public async ValueTask DisposeAsync()
     {
+        await _givingUpReport.DisposeAsync();
         await _stopRenewing.CancelAsync();
         await _renewing;
         _stopRenewing.Dispose();

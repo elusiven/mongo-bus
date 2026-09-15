@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using MongoBus.Infrastructure;
 using MongoBus.Internal;
@@ -165,6 +167,39 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         (await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8))).Should().BeBefore(expiry);
     }
 
+    [Fact]
+    public async Task Lease_WarnsThatItGaveUp_WhenRenewalsKeepFailing()
+    {
+        var databaseName = NewDatabaseName();
+        var applicationName = NewApplicationName();
+        var inbox = InboxIn(databaseName, applicationName);
+        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+        var log = new RecordingLogger();
+
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        log.Warnings.Should().ContainSingle(warning => warning.Contains("neared expiry") && warning.Contains(message.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var lockTime = TimeSpan.FromSeconds(9);
+        var message = await InsertLockedAsync(inbox, lockTime);
+        var log = new RecordingLogger();
+
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
+    }
+
     private static string NewDatabaseName() => "lock_renewer_" + Guid.NewGuid().ToString("N");
 
     private IMongoCollection<InboxMessage> InboxIn(string databaseName, string? applicationName = null) =>
@@ -261,5 +296,21 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
                 ["configureFailPoint"] = "failCommand",
                 ["mode"] = "off"
             });
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+
+        public IEnumerable<string> Warnings =>
+            _entries.Where(entry => entry.Level == LogLevel.Warning).Select(entry => entry.Message);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            _entries.Enqueue((logLevel, formatter(state, exception)));
     }
 }
