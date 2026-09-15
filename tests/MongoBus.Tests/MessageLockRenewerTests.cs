@@ -72,9 +72,10 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
     public async Task Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock()
     {
         var inbox = InboxIn(NewDatabaseName());
-        var message = await InsertLockedAsync(inbox, LeaseLockTime);
+        var lockTime = TimeSpan.FromSeconds(9);
+        var message = await InsertLockedAsync(inbox, lockTime);
 
-        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
+        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
         await InboxLocks.TakeLockAsync(inbox, message.Id);
         var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
 
@@ -105,9 +106,10 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await Task.Delay(TimeSpan.FromSeconds(4));
         await lease!.DisposeAsync();
+        var storedExpiry = (await ReloadAsync(inbox, message)).LockedUntilUtc!.Value;
 
         var beforeLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
-        await Task.Delay(LeaseLockTime);
+        await Task.Delay(storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250));
         var afterLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
 
         beforeLapse.Should().BeNull();

@@ -174,7 +174,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
     public sealed class StolenDefinition : ConsumerDefinition<StolenHandler, StolenMessage>
     {
         public override string TypeId => "renewal.stolen";
-        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(9);
         public override bool RenewLock => true;
     }
 
