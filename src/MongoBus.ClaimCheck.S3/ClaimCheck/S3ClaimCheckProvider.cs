@@ -30,6 +30,11 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
             config.ServiceURL = options.ServiceUrl;
             if (!string.IsNullOrWhiteSpace(options.Region))
                 config.AuthenticationRegion = options.Region;
+
+            // S3-compatible stores do not all support the flexible checksums AWS SDK v4 sends by default
+            // and reject such uploads, so custom endpoints keep the pre-v4 behaviour.
+            config.RequestChecksumCalculation = Amazon.Runtime.RequestChecksumCalculation.WHEN_REQUIRED;
+            config.ResponseChecksumValidation = Amazon.Runtime.ResponseChecksumValidation.WHEN_REQUIRED;
         }
         else if (!string.IsNullOrWhiteSpace(options.Region))
         {
@@ -92,7 +97,7 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
         do
         {
             response = await _client.ListObjectsV2Async(request, ct);
-            foreach (var s3Object in response.S3Objects)
+            foreach (var s3Object in response.S3Objects ?? [])
             {
                 // To get metadata, we'd need to call GetObjectMetadata for each object.
                 // S3 ListObjects doesn't return user-defined metadata.
@@ -102,12 +107,12 @@ public sealed class S3ClaimCheckProvider : IClaimCheckProvider
                     Provider: Name,
                     Container: _options.BucketName,
                     Key: s3Object.Key,
-                    Length: s3Object.Size,
-                    CreatedAt: s3Object.LastModified.ToUniversalTime());
+                    Length: s3Object.Size ?? 0,
+                    CreatedAt: s3Object.LastModified?.ToUniversalTime());
             }
 
             request.ContinuationToken = response.NextContinuationToken;
-        } while (response.IsTruncated);
+        } while (response.IsTruncated == true);
     }
 
     private string BuildKey()

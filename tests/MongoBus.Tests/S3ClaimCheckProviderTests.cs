@@ -39,6 +39,17 @@ public class S3ClaimCheckProviderTests(MinioFixture minio) : IClassFixture<Minio
     }
 
     [Fact]
+    public async Task PutAsync_WithMetadata_ShouldStoreMetadataOnTheObject()
+    {
+        var provider = await CreateProviderWithEmptyBucketAsync();
+        var metadata = new Dictionary<string, string> { ["compression"] = "gzip" };
+
+        var reference = await provider.PutAsync(WriteRequest("payload") with { Metadata = metadata }, CancellationToken.None);
+
+        (await minio.GetObjectMetadataValueAsync(reference.Container, reference.Key, "compression")).Should().Be("gzip");
+    }
+
+    [Fact]
     public async Task PutAsync_WithKeyPrefix_ShouldStoreObjectUnderPrefix()
     {
         var provider = await CreateProviderWithEmptyBucketAsync(options => options.KeyPrefix = "claims/");
