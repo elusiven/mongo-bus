@@ -15,12 +15,12 @@ public class MinioFixture : IAsyncLifetime
     public string AccessKey => _container.GetAccessKey();
     public string SecretKey => _container.GetSecretKey();
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _container.StartAsync();
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await _container.StopAsync();
     }

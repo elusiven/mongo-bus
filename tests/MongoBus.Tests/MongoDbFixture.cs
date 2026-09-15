@@ -10,12 +10,12 @@ public class MongoDbFixture : IAsyncLifetime
 
     public string ConnectionString => Container.GetConnectionString();
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await Container.StartAsync();
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await Container.StopAsync();
     }

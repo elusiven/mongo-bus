@@ -1,0 +1,4 @@
+[*.cs]
+# Existing tests pass CancellationToken.None or no token. Adopting TestContext.Current.CancellationToken
+# is a separate change, so keep the xUnit v3 hint in the IDE without flooding build output.
+dotnet_diagnostic.xUnit1051.severity = suggestion
