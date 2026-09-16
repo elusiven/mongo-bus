@@ -10,8 +10,21 @@ public enum ExceptionRetryMode
 
 public sealed class SagaOptions
 {
+    private int? _prefetchCount;
+
     public int ConcurrencyLimit { get; set; } = 16;
-    public int PrefetchCount { get; set; } = 64;
+
+    /// <summary>
+    /// How many messages the pump may hold ready for its handlers, defaulting to <see cref="ConcurrencyLimit"/>.
+    /// A prefetched message is locked while it waits its turn, so prefetching more than the handlers can take on
+    /// lets those locks lapse and hands the messages to a competing consumer.
+    /// </summary>
+    public int PrefetchCount
+    {
+        get => _prefetchCount ?? ConcurrencyLimit;
+        set => _prefetchCount = value;
+    }
+
     public TimeSpan LockTime { get; set; } = TimeSpan.FromSeconds(60);
     public int MaxAttempts { get; set; } = 10;
     public bool IdempotencyEnabled { get; set; }
