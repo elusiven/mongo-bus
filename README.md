@@ -510,7 +510,7 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | Option | Default | Description |
 |--------|---------|-------------|
 | `ConcurrencyLimit` | 16 | Max concurrent event handlers per saga type |
-| `PrefetchCount` | 64 | Channel capacity for prefetched messages |
+| `PrefetchCount` | `ConcurrencyLimit` | Channel capacity for prefetched messages. A prefetched message is locked while it waits its turn, so raise this above `ConcurrencyLimit` only for handlers fast enough to drain the extra messages well within `LockTime` |
 | `LockTime` | 60s | How long a message lock is held |
 | `MaxAttempts` | 10 | Max retry attempts before dead-lettering |
 | `IdempotencyEnabled` | false | Deduplicate events by CloudEvent ID |
