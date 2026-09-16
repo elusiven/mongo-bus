@@ -17,6 +17,8 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
     private const string ThisConsumer = "this-consumer";
     private const string EndpointId = "lock-renewer-endpoint";
     private static readonly TimeSpan LeaseLockTime = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan GiveUpBudget = LeaseLockTime - LeaseLockTime / 6;
+    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromMilliseconds(500);
 
     [Fact]
     public async Task TryExtend_MovesTheLockForward_WhenThisConsumerStillOwnsIt()
@@ -112,7 +114,8 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var storedExpiry = (await ReloadAsync(inbox, message)).LockedUntilUtc!.Value;
 
         var beforeLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
-        await Task.Delay(storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250));
+        var untilLapse = storedExpiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(250);
+        await Task.Delay(untilLapse > TimeSpan.Zero ? untilLapse : TimeSpan.Zero);
         var afterLapse = await pump.TryLockOneAsync(EndpointId, LeaseLockTime, "another-pump", CancellationToken.None);
 
         beforeLapse.Should().BeNull();
@@ -150,7 +153,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
         await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
 
-        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
+        sinceClaim.Elapsed.Should().BeLessThan(GiveUpBudget + SchedulingTolerance);
     }
 
     [Fact]
@@ -167,7 +170,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
             fixture.ConnectionString, applicationName, "alwaysOn", blockMilliseconds: 10_000);
         await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
 
-        sinceClaim.Elapsed.Should().BeLessThan(LeaseLockTime - LeaseLockTime / 6 + TimeSpan.FromMilliseconds(500));
+        sinceClaim.Elapsed.Should().BeLessThan(GiveUpBudget + SchedulingTolerance);
     }
 
     [Fact]
@@ -203,6 +206,11 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
     }
 
+    /// <summary>
+    /// Guards the guard in <c>ReportGivingUp</c>. The assertion holds either way — cancellation keeps invoking the
+    /// remaining callbacks after one throws — so the regression signal is the run itself: unguarded, the logger's
+    /// exception is unhandled on the watchdog's timer thread and fails the run with a non-zero exit code.
+    /// </summary>
     [Fact]
     public async Task Lease_StillGivesUp_WhenTheLoggerThrows()
     {

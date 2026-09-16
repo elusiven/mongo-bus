@@ -1937,12 +1937,24 @@ with
 
 (Same values; the deadline and its tolerance are now named and defined once.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Say why the give-up-logger test's assertion is not its regression signal**
+
+Fix 5's implementer found that `Lease_StillGivesUp_WhenTheLoggerThrows` asserts `signalled.Should().BeTrue()` in both directions: `CancellationTokenSource.Cancel` keeps invoking the remaining callbacks after one throws, so the lease signals either way, and the unguarded version is caught only as the runner's fatal error and non-zero exit. An unhandled exception on the watchdog's timer thread cannot be observed in-process once it has ended the run, so no assertion can replace that signal. Without a note the assertion reads as redundant and the test becomes a deletion candidate. Add directly above that `[Fact]`:
+
+```csharp
+    /// <summary>
+    /// Guards the guard in <c>ReportGivingUp</c>. The assertion holds either way — cancellation keeps invoking the
+    /// remaining callbacks after one throws — so the regression signal is the run itself: unguarded, the logger's
+    /// exception is unhandled on the watchdog's timer thread and fails the run with a non-zero exit code.
+    /// </summary>
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests|FullyQualifiedName~MongoBus.Tests.LockRenewalTests"`
 Expected: PASS (MessageLockRenewerTests 13, LockRenewalTests 6). Run it twice.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add tests/MongoBus.Tests/LockRenewalTests.cs tests/MongoBus.Tests/MessageLockRenewerTests.cs

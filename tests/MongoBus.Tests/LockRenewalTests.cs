@@ -288,7 +288,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
     public sealed class FinishingDefinition : ConsumerDefinition<FinishingHandler, FinishingMessage>
     {
         public override string TypeId => "renewal.finishing";
-        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(6);
         public override bool RenewLock => true;
     }
 
@@ -311,7 +311,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
             locked = await inbox.Find(x => x.TypeId == "renewal.finishing").SingleAsync();
 
             stopping = bus.DisposeAsync().AsTask();
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromSeconds(8));
             readAt = DateTime.UtcNow;
             whileStopping = await inbox.Find(x => x.Id == locked.Id).SingleAsync();
         }
