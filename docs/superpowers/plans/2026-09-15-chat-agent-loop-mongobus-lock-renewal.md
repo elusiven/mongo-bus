@@ -1961,7 +1961,60 @@ git add tests/MongoBus.Tests/LockRenewalTests.cs tests/MongoBus.Tests/MessageLoc
 git commit -m "chat-agent-loop: make the lease tests robust to clock steps and name the give-up budget"
 ```
 
-After Fix 5 and Fix 6: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle).
+### Fix 7: The lease tests stop failing under full-suite load
+
+**Found by verification, not by review.** Four full-suite runs on `31ce66c` produced two failures, each a different test, both in `MessageLockRenewerTests`:
+
+| Run | Result | Failing test |
+| --- | --- | --- |
+| 1 | 287/288 | `MessageWhoseRenewalStoppedWithoutARelease_IsLockableByAnotherPumpOnlyAfterItsLockLapses` (4 s) |
+| 2 | 288/288 | — |
+| 3 | 288/288 | — |
+| 4 | 287/288 | `Lease_KeepsTheLock_WhenOneRenewalFails`: `Expected LockedUntilUtc to be after <00:17:43.7342367>, but found <00:17:43.716>` |
+
+Run 4's miss is 18 ms: the renewed expiry had just slipped into the past when the assertion read it. Both tests were introduced by `8d70520`; Fix 6 changed neither in a way that can cause this (its only edit to the run-1 test floors a `Task.Delay` at zero, which can shorten a wait but never invalidates the assertions, and the run-4 test it did not touch at all). The cause is margin: `LeaseLockTime` is 3 seconds, so renewals run every 1 second and each extension buys 3 seconds, while this host steps its wall clock forward 1.4-1.8 s about every 34 s and a 4-minute suite delays renewal ticks through thread-pool and MongoDB contention. A delayed tick plus a step exceeds the margin. `Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock`, which already uses a 9-second lock, has never failed.
+
+Scaling the class's lock time absorbs both causes without having to separate them, and the mutation guards keep their teeth because every budget is expressed in terms of `LeaseLockTime`.
+
+**Files:**
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs` (only this file; `src/` must remain untouched)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Scale the class's lock time and every wait derived from it**
+
+`LeaseLockTime` becomes `TimeSpan.FromSeconds(9)` (line 19). Every wait in this class that exists to span a multiple of the lock time scales by the same factor of 3, and `SchedulingTolerance` becomes `TimeSpan.FromSeconds(1)` — absolute scheduling jitter under full-suite load, not a proportional budget. Known sites:
+
+| Test | Wait now | Becomes |
+| --- | --- | --- |
+| `Lease_KeepsTheLockAlive_ForLongerThanLockTime` | `Task.Delay(7 s)` | `Task.Delay(TimeSpan.FromSeconds(15))` |
+| `MessageWhoseRenewalStoppedWithoutARelease_…` | `Task.Delay(4 s)` | `Task.Delay(TimeSpan.FromSeconds(12))` |
+| `Lease_KeepsTheLock_WhenOneRenewalFails` | `Task.Delay(6 s)` | `Task.Delay(TimeSpan.FromSeconds(12))` |
+| every `WaitForCancellationAsync` / `CancellationTimeAsync` timeout of `8 s` in this class | `8 s` | `TimeSpan.FromSeconds(20)` |
+
+Read the whole file and apply the same rule to any further wait that derives from `LeaseLockTime`; leave alone the two tests that pass an explicit `TimeSpan.FromSeconds(9)` lock of their own, the `TimeSpan.FromSeconds(1)` and `FromSeconds(30)` locks in the `TryExtend_*` tests, and the `250 ms` lapse buffer. Report every line changed.
+
+- [ ] **Step 2: Prove the give-up assertions still have teeth**
+
+The give-up budget is now `9 s - 9 s / 6 = 7.5 s` with a 1 s tolerance. Temporarily change, in `src/MongoBus/Internal/MessageLockLease.cs` `GiveUpBeforeExpiry`, `lockTime - lockTime / 6` to `lockTime + lockTime / 6`, then run:
+
+`dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_SignalsLockLostBeforeTheLockExpires"`
+
+Expected: FAIL, both tests, giving up at about 10.5 s against the 8.5 s the assertion allows. Restore the line, confirm `git diff src/` is empty, and rebuild before any further run.
+
+- [ ] **Step 3: Run the class twice**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests"`
+Expected: PASS, 13 tests, both times. The class now takes roughly two minutes.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2026-09-15-chat-agent-loop-mongobus-lock-renewal.md
+git commit -m "chat-agent-loop: give the lease tests margins that survive full-suite load"
+```
+
+After Fix 5, Fix 6 and Fix 7: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
 
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
 

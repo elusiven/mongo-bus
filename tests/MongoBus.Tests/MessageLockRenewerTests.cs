@@ -16,9 +16,9 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 {
     private const string ThisConsumer = "this-consumer";
     private const string EndpointId = "lock-renewer-endpoint";
-    private static readonly TimeSpan LeaseLockTime = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan LeaseLockTime = TimeSpan.FromSeconds(9);
     private static readonly TimeSpan GiveUpBudget = LeaseLockTime - LeaseLockTime / 6;
-    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromSeconds(1);
 
     [Fact]
     public async Task TryExtend_MovesTheLockForward_WhenThisConsumerStillOwnsIt()
@@ -66,7 +66,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var message = await InsertLockedAsync(inbox, LeaseLockTime);
 
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
-        await Task.Delay(TimeSpan.FromSeconds(7));
+        await Task.Delay(TimeSpan.FromSeconds(15));
 
         lease.Should().NotBeNull();
         lease!.LockLost.IsCancellationRequested.Should().BeFalse();
@@ -109,7 +109,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var pump = new MongoMessagePump(new MongoClient(fixture.ConnectionString).GetDatabase(databaseName));
 
         var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
-        await Task.Delay(TimeSpan.FromSeconds(4));
+        await Task.Delay(TimeSpan.FromSeconds(12));
         await lease!.DisposeAsync();
         var storedExpiry = (await ReloadAsync(inbox, message)).LockedUntilUtc!.Value;
 
@@ -134,7 +134,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(
             fixture.ConnectionString, applicationName, new BsonDocument("times", 1));
-        await Task.Delay(TimeSpan.FromSeconds(6));
+        await Task.Delay(TimeSpan.FromSeconds(12));
 
         lease!.LockLost.IsCancellationRequested.Should().BeFalse();
         (await ReloadAsync(InboxIn(databaseName), message)).LockedUntilUtc.Should().BeAfter(DateTime.UtcNow);
@@ -151,7 +151,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var sinceClaim = Stopwatch.StartNew();
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
-        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
 
         sinceClaim.Elapsed.Should().BeLessThan(GiveUpBudget + SchedulingTolerance);
     }
@@ -168,7 +168,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(
             fixture.ConnectionString, applicationName, "alwaysOn", blockMilliseconds: 10_000);
-        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
 
         sinceClaim.Elapsed.Should().BeLessThan(GiveUpBudget + SchedulingTolerance);
     }
@@ -184,7 +184,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 
         await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
-        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
         await Task.Delay(TimeSpan.FromMilliseconds(200));
 
         log.Warnings.Should().ContainSingle(warning => warning.Contains("neared expiry") && warning.Contains(message.Id.ToString()));
@@ -223,7 +223,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
             .TryAcquireLeaseAsync(message, LeaseLockTime, CancellationToken.None);
         await using var failures = await UpdateFailures.InjectAsync(fixture.ConnectionString, applicationName, "alwaysOn");
 
-        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(8));
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
 
         signalled.Should().BeTrue();
     }
