@@ -21,6 +21,7 @@ internal sealed class MongoBusRuntime : BackgroundService
     private readonly ILogger<MongoBusRuntime> _log;
     private readonly IReadOnlyList<IConsumerDefinition> _definitions;
     private readonly MessageLockRenewer _lockRenewer;
+    private readonly IdempotencyStore _idempotency;
 
     public MongoBusRuntime(
         IMongoDatabase db,
@@ -39,6 +40,7 @@ internal sealed class MongoBusRuntime : BackgroundService
         _log = log;
         _definitions = definitions.ToList();
         _lockRenewer = new MessageLockRenewer(_inbox, log);
+        _idempotency = new IdempotencyStore(db);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -364,18 +366,17 @@ internal sealed class MongoBusRuntime : BackgroundService
         return new ConsumeContext(msg.EndpointId, msg.TypeId, msg.Id, msg.Attempt, subject, source, cloudEventId, correlationId, causationId);
     }
 
+    /// <summary>
+    /// Claims the CloudEvent for this endpoint before it is handled. Asking whether another copy had already been
+    /// processed answered nothing while that copy was still in a handler, so two consumers could both be told to
+    /// go ahead; taking the claim settles the winner in the database instead.
+    /// </summary>
     private async Task<bool> TrySkipIdempotentAsync(string endpointId, InboxMessage msg, string cloudEventId, CancellationToken ct)
     {
-        var alreadyProcessed = await _inbox.Find(x =>
-            x.EndpointId == endpointId &&
-            x.CloudEventId == cloudEventId &&
-            x.Status == InboxStatus.Processed &&
-            x.Id != msg.Id).AnyAsync(ct);
-
-        if (!alreadyProcessed)
+        if (await _idempotency.TryClaimAsync(endpointId, cloudEventId, ct))
             return false;
 
-        _log.LogInformation("Message {CloudEventId} already processed by endpoint {EndpointId}. Skipping.", cloudEventId, endpointId);
+        _log.LogInformation("Message {CloudEventId} already claimed by endpoint {EndpointId}. Skipping.", cloudEventId, endpointId);
 
         await _inbox.UpdateOneAsync(
             x => x.Id == msg.Id,

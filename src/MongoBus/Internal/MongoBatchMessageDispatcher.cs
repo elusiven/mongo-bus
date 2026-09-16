@@ -20,6 +20,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), BatchDispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), IConsumerDefinition> _definitionMap;
+    private readonly IdempotencyStore _idempotency;
     private readonly IReadOnlyList<IBatchObserver> _observers;
 
     public MongoBatchMessageDispatcher(
@@ -44,6 +45,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
             .GroupBy(d => d.EndpointName)
             .ToDictionary(g => g.Key, g => g.Max(d => d.MaxAttempts));
         _definitionMap = batchDefinitions.ToDictionary(d => (d.EndpointName, d.TypeId), d => (IConsumerDefinition)d);
+        _idempotency = new IdempotencyStore(db);
     }
 
     public async Task DispatchBatchAsync(IReadOnlyList<InboxMessage> messages, BatchConsumeContext context, CancellationToken ct)
@@ -101,6 +103,8 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             _log.LogInformation("Stopped while handling a batch of {Count} messages on endpoint {EndpointId}; releasing them for redelivery.", readableMessages.Count, context.EndpointId);
+            foreach (var msg in readableMessages)
+                await ReleaseIdempotencyClaimAsync(msg);
             await ReleaseLocksAsync(readableMessages);
         }
         catch (Exception ex)
@@ -279,6 +283,9 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
 
     private async Task RecordFailureAsync(IReadOnlyList<InboxMessage> messages, BatchDispatchRegistration reg, Exception ex)
     {
+        foreach (var msg in messages)
+            await ReleaseIdempotencyClaimAsync(msg);
+
         if (reg.FailureMode == BatchFailureMode.MarkDead)
         {
             foreach (var msg in messages)
@@ -337,6 +344,17 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     private bool ShouldRetry(InboxMessage msg, Exception ex) =>
         !_definitionMap.TryGetValue((msg.EndpointId, msg.TypeId), out var definition)
         || definition.ShouldRetry(HandlerException.Unwrap(ex));
+
+    /// <summary>
+    /// A message that did not complete gives up its claim on the CloudEvent, so its own retry, or a later copy,
+    /// is handled instead of being skipped as a duplicate of work that never actually happened.
+    /// </summary>
+    private Task ReleaseIdempotencyClaimAsync(InboxMessage msg) =>
+        _definitionMap.TryGetValue((msg.EndpointId, msg.TypeId), out var definition)
+        && definition.IdempotencyEnabled
+        && !string.IsNullOrEmpty(msg.CloudEventId)
+            ? _idempotency.ReleaseAsync(msg.EndpointId, msg.CloudEventId, CancellationToken.None)
+            : Task.CompletedTask;
 
     private Task DeadLetterAsync(InboxMessage msg, int attempt, Exception ex) =>
         _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
