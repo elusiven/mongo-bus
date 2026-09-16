@@ -185,50 +185,63 @@ internal sealed class MongoBusRuntime : BackgroundService
 
         while (!ct.IsCancellationRequested)
         {
-            var batchStart = DateTime.UtcNow;
-            var firstMsg = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
-            if (firstMsg is null)
+            // The slot is taken before the first message is locked. A worker that waited for it afterwards would
+            // hold its batch's locks for as long as the wait lasted, which nothing bounds, until they lapsed and a
+            // competing consumer took the messages.
+            if (limiter is not null)
+                await limiter.WaitAsync(ct);
+
+            try
             {
-                await Task.Delay(50, ct);
-                continue;
-            }
-
-            var messages = new List<InboxMessage> { firstMsg };
-            var lastReceived = DateTime.UtcNow;
-            var assemblyDeadline = batchStart.Add(AssemblyWindowFor(cfg.LockTime));
-
-            while (messages.Count < cfg.Options.MaxBatchSize)
-            {
-                var now = DateTime.UtcNow;
-                var elapsed = now - batchStart;
-                var idle = now - lastReceived;
-
-                if (now >= assemblyDeadline)
-                    break;
-
-                if (cfg.Options.FlushMode == BatchFlushMode.SinceFirstMessage)
+                var batchStart = DateTime.UtcNow;
+                var firstMsg = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
+                if (firstMsg is null)
                 {
-                    if (elapsed >= cfg.Options.MaxBatchWaitTime)
-                        break;
-                }
-                else
-                {
-                    if (messages.Count >= cfg.Options.MinBatchSize && idle >= cfg.Options.MaxBatchIdleTime)
-                        break;
-                }
-
-                var next = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
-                if (next is null)
-                {
-                    await Task.Delay(20, ct);
+                    await Task.Delay(50, ct);
                     continue;
                 }
 
-                messages.Add(next);
-                lastReceived = DateTime.UtcNow;
-            }
+                var messages = new List<InboxMessage> { firstMsg };
+                var lastReceived = DateTime.UtcNow;
+                var assemblyDeadline = batchStart.Add(AssemblyWindowFor(cfg.LockTime));
 
-            await DispatchBatchWithBackpressureAsync(cfg, limiter, messages, batchStart, ct);
+                while (messages.Count < cfg.Options.MaxBatchSize)
+                {
+                    var now = DateTime.UtcNow;
+                    var elapsed = now - batchStart;
+                    var idle = now - lastReceived;
+
+                    if (now >= assemblyDeadline)
+                        break;
+
+                    if (cfg.Options.FlushMode == BatchFlushMode.SinceFirstMessage)
+                    {
+                        if (elapsed >= cfg.Options.MaxBatchWaitTime)
+                            break;
+                    }
+                    else
+                    {
+                        if (messages.Count >= cfg.Options.MinBatchSize && idle >= cfg.Options.MaxBatchIdleTime)
+                            break;
+                    }
+
+                    var next = await TryLockNextAsync(LockNext, backoff, cfg.EndpointId, ct);
+                    if (next is null)
+                    {
+                        await Task.Delay(20, ct);
+                        continue;
+                    }
+
+                    messages.Add(next);
+                    lastReceived = DateTime.UtcNow;
+                }
+
+                await DispatchBatchAsync(cfg, messages, batchStart, ct);
+            }
+            finally
+            {
+                limiter?.Release();
+            }
         }
     }
 
@@ -239,30 +252,6 @@ internal sealed class MongoBusRuntime : BackgroundService
     /// handler is given the same message several times over in one batch.
     /// </summary>
     private static TimeSpan AssemblyWindowFor(TimeSpan lockTime) => lockTime / 2;
-
-    private async Task DispatchBatchWithBackpressureAsync(
-        BatchRuntimeConfig cfg,
-        SemaphoreSlim? limiter,
-        IReadOnlyList<InboxMessage> messages,
-        DateTime batchStart,
-        CancellationToken ct)
-    {
-        if (limiter is null)
-        {
-            await DispatchBatchAsync(cfg, messages, batchStart, ct);
-            return;
-        }
-
-        await limiter.WaitAsync(ct);
-        try
-        {
-            await DispatchBatchAsync(cfg, messages, batchStart, ct);
-        }
-        finally
-        {
-            limiter.Release();
-        }
-    }
 
     private async Task DispatchBatchAsync(BatchRuntimeConfig cfg, IReadOnlyList<InboxMessage> messages, DateTime batchStart, CancellationToken ct)
     {
