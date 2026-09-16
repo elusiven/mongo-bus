@@ -112,7 +112,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
         public async Task HandleAsync(LongMessage message, ConsumeContext context, CancellationToken ct)
         {
             Interlocked.Increment(ref Starts);
-            await Task.Delay(TimeSpan.FromSeconds(7), ct);
+            await Task.Delay(TimeSpan.FromSeconds(15), ct);
             Interlocked.Increment(ref Ends);
         }
     }
@@ -120,7 +120,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
     public sealed class LongDefinition : ConsumerDefinition<LongHandler, LongMessage>
     {
         public override string TypeId => "renewal.long";
-        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(9);
         public override bool RenewLock => true;
     }
 
@@ -136,8 +136,8 @@ public class LockRenewalTests(MongoDbFixture fixture)
         await using var second = await StartBusAsync(databaseName, registerConsumer);
 
         await PublisherOf(first).PublishAsync("renewal.long", new LongMessage(), "test-source");
-        await WaitUntilAsync(() => Task.FromResult(LongHandler.Ends >= 1), TimeSpan.FromSeconds(20));
-        await Task.Delay(TimeSpan.FromSeconds(4));
+        await WaitUntilAsync(() => Task.FromResult(LongHandler.Ends >= 1), TimeSpan.FromSeconds(40));
+        await Task.Delay(TimeSpan.FromSeconds(12));
 
         LongHandler.Starts.Should().Be(1);
         (await InboxOf(first).Find(x => x.TypeId == "renewal.long").SingleAsync()).Status.Should().Be(InboxStatus.Processed);
@@ -229,7 +229,7 @@ public class LockRenewalTests(MongoDbFixture fixture)
         public override string TypeId => "renewal.backlog";
         public override int ConcurrencyLimit => 2;
         public override int PrefetchCount => 2;
-        public override TimeSpan LockTime => TimeSpan.FromSeconds(3);
+        public override TimeSpan LockTime => TimeSpan.FromSeconds(9);
         public override bool RenewLock => true;
     }
 
@@ -256,11 +256,11 @@ public class LockRenewalTests(MongoDbFixture fixture)
         var firstOwner = firstLock.LockOwner;
         await WaitUntilAsync(
             async () => await inbox.CountDocumentsAsync(x => x.Id == waitingId && x.LockOwner != firstOwner) == 1,
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
         BacklogHandler.ReleaseBlockers.TrySetResult();
-        await WaitUntilAsync(() => Task.FromResult(BacklogHandler.Handled.Contains("waiting")), TimeSpan.FromSeconds(15));
-        await Task.Delay(TimeSpan.FromSeconds(4));
+        await WaitUntilAsync(() => Task.FromResult(BacklogHandler.Handled.Contains("waiting")), TimeSpan.FromSeconds(45));
+        await Task.Delay(TimeSpan.FromSeconds(12));
 
         BacklogHandler.Handled.Count(name => name == "waiting").Should().Be(1);
     }

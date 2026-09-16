@@ -2095,7 +2095,56 @@ git commit -m "chat-agent-loop: assert why the lease lost the lock, not just tha
 
 **Accepted but not fixed here** (PR follow-up list): the watchdog's `CancelAfter` still cancels a linked source inline on the timer thread, so a *handler* that registers a throwing cancellation callback escapes with no frame above it. Generic .NET cancellation behaviour, predates this branch, and guarding it means not cancelling from a timer at all — out of scope for this ticket.
 
-After Fix 5, Fix 6, Fix 7 and Fix 8: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
+### Fix 9: The same margin fix, in the file Fix 7 did not cover
+
+**Found by verification on `f69f33d`.** Run 1 of 3 failed with `LockRenewalTests.HandlerOutlivingLockTime_RunsOnce_AcrossCompetingConsumers`: `Expected LongHandler.Starts to be 1, but found 2` — the handler ran twice across two competing buses, which is the invariant this whole feature exists to protect.
+
+It is not a duplicate-execution defect. `LongDefinition` sets `LockTime => TimeSpan.FromSeconds(3)` with `RenewLock => true`, so renewals tick every second and each extension buys three seconds, on a host whose wall clock steps forward 1.4-1.8 s roughly every 34 seconds — a single step consumes more than half the lock's entire life. When renewals cannot keep up the lock genuinely lapses, the watchdog cancels the first handler, the message becomes available, and the competing bus takes it. A second start is the *correct* library response to an expired lock; what is wrong is a test lock short enough for this machine's clock to expire on its own.
+
+The natural experiment is inside the same file: the definitions using 9 s (`StolenDefinition`), 30 s (`HeldDefinition`) and 6 s (`FinishingDefinition`, raised by Fix 6) have never failed, while the two 3-second renewing definitions are where the failures land. Fix 7 scaled `MessageLockRenewerTests`, which now passes three consecutive full-suite runs; `LockRenewalTests` was never in its scope.
+
+**If this recurs after scaling, the margin explanation is dead** and it becomes a duplicate-execution investigation under superpowers:systematic-debugging — at production lock times of 30-60 s a 1.8 s step is 3-6% of the lock, not 60%, so a repeat failure would mean something other than the clock.
+
+**Files:**
+- Test: `tests/MongoBus.Tests/LockRenewalTests.cs` (only this file; `src/` must remain untouched)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Scale the two three-second renewing definitions and every wait that derives from them**
+
+Read the whole file first. Both changes keep each test's meaning: a handler that outlives its lock must still outlive it after scaling.
+
+| Site | Now | Becomes |
+| --- | --- | --- |
+| `LongDefinition.LockTime` | `FromSeconds(3)` | `TimeSpan.FromSeconds(9)` |
+| `LongHandler.HandleAsync` delay | `FromSeconds(7)` | `TimeSpan.FromSeconds(15)` |
+| `HandlerOutlivingLockTime_RunsOnce_AcrossCompetingConsumers` `WaitUntilAsync` timeout | `FromSeconds(20)` | `TimeSpan.FromSeconds(40)` |
+| same test, trailing settle delay | `FromSeconds(4)` | `TimeSpan.FromSeconds(12)` |
+| `BacklogDefinition.LockTime` | `FromSeconds(3)` | `TimeSpan.FromSeconds(9)` |
+
+For the backlog test, apply the same factor of three to every wait whose purpose is to span a multiple of that lock — including `BacklogHandler`'s own delays, which this plan has not read — and report each line you changed with its old and new value. Leave alone: `SlowPlainDefinition` (1 s, `RenewLock` not set — it is the non-renewing control), `HeldDefinition` (30 s), `StolenDefinition` (9 s), `FinishingDefinition` (6 s), and the 500 ms settle delay at line 195.
+
+- [ ] **Step 2: Prove the competing-consumers test still has teeth**
+
+Temporarily set `LongDefinition.RenewLock` to `false`, then run:
+
+`dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.LockRenewalTests.HandlerOutlivingLockTime_RunsOnce_AcrossCompetingConsumers"`
+
+Expected: FAIL on `Starts` greater than 1 — without renewal a 15-second handler cannot hold a 9-second lock, so the competing bus takes the message. Record the verbatim assertion. Restore `RenewLock => true`, confirm `git diff` shows only the intended Step 1 changes, and rebuild before any further run.
+
+- [ ] **Step 3: Run the class three times**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.LockRenewalTests"`
+Expected: PASS, 6 tests, all three times. Report each run's verbatim summary line and duration.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/MongoBus.Tests/LockRenewalTests.cs docs/superpowers/plans/2026-09-15-chat-agent-loop-mongobus-lock-renewal.md
+git commit -m "chat-agent-loop: give the competing-consumer tests locks this host cannot expire"
+```
+
+After Fix 5, Fix 6, Fix 7, Fix 8 and Fix 9: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
 
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
 
