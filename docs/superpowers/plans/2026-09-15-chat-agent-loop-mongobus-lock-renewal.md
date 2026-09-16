@@ -2023,7 +2023,79 @@ Fix 7's implementer found one wait the table did not name — `Lease_StillGivesU
 
 The 200 ms log-flush delays and the 250 ms lapse buffer stay: they follow an event that has already been awaited, so no clock step or renewal tick lands inside them.
 
-After Fix 5, Fix 6 and Fix 7: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
+### Fix 8: Restore the guard that the lock-taken widening removed
+
+**Found by the scoped correctness review of `0af7726...HEAD`** ("Acceptable with concerns", one Medium, two Low, no Critical or High). The Medium is a regression introduced by `e3d786f`, this plan's own commit, on the strength of a claim written in it — that widening a cancellation timeout cannot weaken an assertion. That claim is false here. `Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock` uses a 9-second lock, so the watchdog arms at claim + 7.5 s and is re-armed only by a *successful* extend. Once another consumer owns the row no extend matches, so the watchdog fires at 7.5 s — inside the new 20-second wait. Mutate the lock-taken branch away (`MessageLockLease.cs`, replace `_lockTakenReported = true; … await _lockLost.CancelAsync(); return;` with `continue`) and the test still passes, because the watchdog cancels for its own reason. At the old 5-second timeout the mutant timed out and the test failed. The second assertion re-reads an owner the test itself wrote, so it guards nothing.
+
+The branch's promise is still covered by `Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt` and `LockRenewalTests.RenewingHandler_IsCancelled_WhenAnotherConsumerTakesItsLock`, so this is a lost guard, not an unguarded behaviour. Fix it by asserting the *reason* for cancellation rather than by shrinking the timeout again: that keeps the robustness margin and makes the test timing-insensitive, which is strictly better than what it was before `e3d786f`.
+
+**Files:**
+- Test: `tests/MongoBus.Tests/MessageLockRenewerTests.cs` (only this file; `src/` must remain untouched)
+
+**Interfaces:** none.
+
+- [ ] **Step 1: Assert why the lease lost the lock**
+
+In `Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock`, build the renewer with a recording logger and assert the recorded reason. The test becomes:
+
+```csharp
+    [Fact]
+    public async Task Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock()
+    {
+        var inbox = InboxIn(NewDatabaseName());
+        var lockTime = TimeSpan.FromSeconds(9);
+        var message = await InsertLockedAsync(inbox, lockTime);
+        var log = new RecordingLogger();
+
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
+        await InboxLocks.TakeLockAsync(inbox, message.Id);
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        signalled.Should().BeTrue();
+        log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
+        (await ReloadAsync(inbox, message)).LockOwner.Should().Be(InboxLocks.OtherOwner);
+    }
+```
+
+The 200 ms delay matches the neighbouring warning test: it follows a cancellation that has already been awaited, so no renewal tick or clock step lands inside it.
+
+- [ ] **Step 2: Prove the restored guard has teeth**
+
+Temporarily replace the lock-taken branch in `src/MongoBus/Internal/MessageLockLease.cs` — `_lockTakenReported = true; … await _lockLost.CancelAsync(); return;` — with `continue`, then run:
+
+`dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests.Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock"`
+
+Expected: FAIL, because the watchdog logs "neared expiry" instead of "no longer holds the lock". Record the verbatim assertion message. Restore the branch, confirm `git diff src/` is empty, and rebuild before any further run.
+
+- [ ] **Step 3: Correct the doc comment's mechanism**
+
+The review's first Low: the comment above `Lease_StillGivesUp_WhenTheLoggerThrows` names the wrong reason. Cancellation callbacks run in reverse registration order, so `WaitForCancellationAsync`'s delay — registered after the lease's `ReportGivingUp` — is already cancelled before the throwing callback runs. The conclusion is unchanged, but the stated mechanism must be right, because the comment is the only thing stopping a reader from deleting the assertion. Replace the middle sentence so the comment reads:
+
+```csharp
+    /// <summary>
+    /// Guards the guard in <c>ReportGivingUp</c>. The assertion is satisfied before the throwing callback runs —
+    /// callbacks run in reverse registration order — and cancellation continues through the remaining callbacks in
+    /// any case, so the regression signal is the run itself: unguarded, the logger's exception is unhandled on the
+    /// watchdog's timer thread and fails the run with a non-zero exit code.
+    /// </summary>
+```
+
+- [ ] **Step 4: Run the class twice**
+
+Run: `dotnet build -c Release && dotnet test --no-build -c Release --filter "FullyQualifiedName~MongoBus.Tests.MessageLockRenewerTests"`
+Expected: PASS, 13 tests, both times.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2026-09-15-chat-agent-loop-mongobus-lock-renewal.md
+git commit -m "chat-agent-loop: assert why the lease lost the lock, not just that it did"
+```
+
+**Accepted but not fixed here** (PR follow-up list): the watchdog's `CancelAfter` still cancels a linked source inline on the timer thread, so a *handler* that registers a throwing cancellation callback escapes with no frame above it. Generic .NET cancellation behaviour, predates this branch, and guarding it means not cancelling from a timer at all — out of scope for this ticket.
+
+After Fix 5, Fix 6, Fix 7 and Fix 8: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
 
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
 

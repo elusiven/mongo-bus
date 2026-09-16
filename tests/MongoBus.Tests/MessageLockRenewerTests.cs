@@ -79,12 +79,15 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
         var inbox = InboxIn(NewDatabaseName());
         var lockTime = TimeSpan.FromSeconds(9);
         var message = await InsertLockedAsync(inbox, lockTime);
+        var log = new RecordingLogger();
 
-        await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
+        await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
         await InboxLocks.TakeLockAsync(inbox, message.Id);
         var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
 
         signalled.Should().BeTrue();
+        log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");
         (await ReloadAsync(inbox, message)).LockOwner.Should().Be(InboxLocks.OtherOwner);
     }
 
@@ -207,9 +210,10 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
     }
 
     /// <summary>
-    /// Guards the guard in <c>ReportGivingUp</c>. The assertion holds either way — cancellation keeps invoking the
-    /// remaining callbacks after one throws — so the regression signal is the run itself: unguarded, the logger's
-    /// exception is unhandled on the watchdog's timer thread and fails the run with a non-zero exit code.
+    /// Guards the guard in <c>ReportGivingUp</c>. The assertion is satisfied before the throwing callback runs —
+    /// callbacks run in reverse registration order — and cancellation continues through the remaining callbacks in
+    /// any case, so the regression signal is the run itself: unguarded, the logger's exception is unhandled on the
+    /// watchdog's timer thread and fails the run with a non-zero exit code.
     /// </summary>
     [Fact]
     public async Task Lease_StillGivesUp_WhenTheLoggerThrows()
