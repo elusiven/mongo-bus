@@ -20,6 +20,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), DispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), IConsumerDefinition> _definitionMap;
+    private readonly IdempotencyStore _idempotency;
     private readonly IReadOnlyList<IConsumeObserver> _observers;
 
     public MongoMessageDispatcher(
@@ -43,6 +44,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
             .GroupBy(d => d.EndpointName)
             .ToDictionary(g => g.Key, g => g.Max(d => d.MaxAttempts));
         _definitionMap = singleDefinitions.ToDictionary(d => (d.EndpointName, d.TypeId));
+        _idempotency = new IdempotencyStore(db);
     }
 
     public async Task DispatchAsync(InboxMessage msg, ConsumeContext context, CancellationToken ct)
@@ -72,6 +74,7 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             _log.LogInformation("Stopped while handling message {MessageId} on endpoint {EndpointId}; releasing it for redelivery.", msg.Id, msg.EndpointId);
+            await ReleaseIdempotencyClaimAsync(msg);
             await ReleaseLockAsync(msg);
         }
         catch (Exception ex)
@@ -211,6 +214,8 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     {
         _log.LogError(ex, "Error processing message {MessageId} on endpoint {EndpointId}", msg.Id, msg.EndpointId);
 
+        await ReleaseIdempotencyClaimAsync(msg);
+
         var nextAttempt = msg.Attempt + 1;
         var maxAttempts = _maxAttemptsMap.GetValueOrDefault(msg.EndpointId, 10);
 
@@ -247,6 +252,17 @@ internal sealed class MongoMessageDispatcher : IMessageDispatcher
     private bool ShouldRetry(InboxMessage msg, Exception ex) =>
         !_definitionMap.TryGetValue((msg.EndpointId, msg.TypeId), out var definition)
         || definition.ShouldRetry(HandlerException.Unwrap(ex));
+
+    /// <summary>
+    /// A message that did not complete gives up its claim on the CloudEvent, so its own retry, or a later copy,
+    /// is handled instead of being skipped as a duplicate of work that never actually happened.
+    /// </summary>
+    private Task ReleaseIdempotencyClaimAsync(InboxMessage msg) =>
+        _definitionMap.TryGetValue((msg.EndpointId, msg.TypeId), out var definition)
+        && definition.IdempotencyEnabled
+        && !string.IsNullOrEmpty(msg.CloudEventId)
+            ? _idempotency.ReleaseAsync(msg.EndpointId, msg.CloudEventId, CancellationToken.None)
+            : Task.CompletedTask;
 
     private Task DeadLetterAsync(InboxMessage msg, int attempt, Exception ex) =>
         RecordOutcomeAsync(msg, Builders<InboxMessage>.Update

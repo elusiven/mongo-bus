@@ -25,6 +25,11 @@ public sealed class MongoBusIndexesHostedService : IHostedService
         await RetentionIndexes.DropLegacyMessageTtlIndexAsync(inbox, ct);
         await RetentionIndexes.EnsureAsync(inbox, nameof(InboxMessage.ProcessedUtc), _options.ProcessedMessageTtl, ct);
 
+        // A claim outlives the processed message it stands for by nothing: both expire on the same schedule, so a
+        // CloudEvent becomes claimable again exactly when the evidence that it was handled is gone.
+        var idempotencyClaims = _db.GetCollection<InboxDedupRecord>(MongoBusConstants.InboxDedupCollectionName);
+        await RetentionIndexes.EnsureAsync(idempotencyClaims, nameof(InboxDedupRecord.CreatedUtc), _options.ProcessedMessageTtl, ct);
+
         await bindings.Indexes.CreateOneAsync(BuildBindingIndex(), cancellationToken: ct);
 
         if (_options.Outbox.Enabled)
