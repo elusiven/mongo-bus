@@ -32,6 +32,17 @@ await bus.PublishAsync("my.message", new MyMessage());
 
 For more information visit project github
 
+## Long-running handlers
+
+```csharp
+public class MyDefinition : ConsumerDefinition<MyHandler, MyMessage>
+{
+    public override string TypeId => "my.message";
+    public override TimeSpan LockTime => TimeSpan.FromMinutes(1);
+    public override bool RenewLock => true; // lock kept while the handler runs; its token is cancelled if the lock is lost
+}
+```
+
 ## Batch consumers
 
 ```csharp

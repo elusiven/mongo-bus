@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using MongoBus.Abstractions;
 using MongoBus.Infrastructure;
 using MongoBus.Models;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace MongoBus.Internal;
@@ -19,6 +20,7 @@ internal sealed class MongoBusRuntime : BackgroundService
     private readonly IMessagePump _pump;
     private readonly ILogger<MongoBusRuntime> _log;
     private readonly IReadOnlyList<IConsumerDefinition> _definitions;
+    private readonly MessageLockRenewer _lockRenewer;
 
     public MongoBusRuntime(
         IMongoDatabase db,
@@ -36,6 +38,7 @@ internal sealed class MongoBusRuntime : BackgroundService
         _pump = pump;
         _log = log;
         _definitions = definitions.ToList();
+        _lockRenewer = new MessageLockRenewer(_inbox, log);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -99,7 +102,7 @@ internal sealed class MongoBusRuntime : BackgroundService
     private async Task FetchLoopAsync(EndpointRuntimeConfig cfg, string pumpId, ChannelWriter<InboxMessage> writer, CancellationToken ct)
     {
         var backoff = new FailureBackoff();
-        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, pumpId, ct);
+        Task<InboxMessage?> LockNext() => _pump.TryLockOneAsync(cfg.EndpointId, cfg.TypeIds, cfg.LockTime, LockOwnerFor(cfg, pumpId), ct);
 
         try
         {
@@ -120,6 +123,14 @@ internal sealed class MongoBusRuntime : BackgroundService
             writer.TryComplete();
         }
     }
+
+    /// <summary>
+    /// A renewing endpoint gives each lock its own owner: its fetch loop can re-lock a message whose lock lapsed while an
+    /// older copy still waits in the channel, and distinct owners let the dispatch-time re-claim skip the stale copy.
+    /// Other endpoints keep the pump id, so the first of their overlapping copies to finish still records the outcome.
+    /// </summary>
+    private static string LockOwnerFor(EndpointRuntimeConfig cfg, string pumpId) =>
+        cfg.RenewLock ? $"{pumpId}:{ObjectId.GenerateNewId()}" : pumpId;
 
     /// <returns>The locked message, or null when none is available or locking failed.</returns>
     private async Task<InboxMessage?> TryLockNextAsync(
@@ -293,13 +304,31 @@ internal sealed class MongoBusRuntime : BackgroundService
                     if (shouldSkip) continue;
                 }
 
-                await _dispatcher.DispatchAsync(msg, ctx, ct);
+                if (cfg.RenewLock)
+                    await DispatchUnderLeaseAsync(cfg, msg, ctx, ct);
+                else
+                    await _dispatcher.DispatchAsync(msg, ctx, ct);
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "Unexpected error in WorkerLoop for endpoint {Endpoint}", cfg.EndpointId);
             }
         }
+    }
+
+    private async Task DispatchUnderLeaseAsync(EndpointRuntimeConfig cfg, InboxMessage msg, ConsumeContext ctx, CancellationToken ct)
+    {
+        await using var lease = await _lockRenewer.TryAcquireLeaseAsync(msg, cfg.LockTime, ct);
+        if (lease is null)
+        {
+            _log.LogInformation(
+                "Message {MessageId} on endpoint {Endpoint} was re-locked while waiting to be dispatched; skipping this copy.",
+                msg.Id, cfg.EndpointId);
+            return;
+        }
+
+        using var dispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LockLost);
+        await _dispatcher.DispatchAsync(msg, ctx, dispatchCancellation.Token);
     }
 
     /// <summary>

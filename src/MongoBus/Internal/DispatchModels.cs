@@ -27,6 +27,7 @@ internal sealed record EndpointRuntimeConfig(
     TimeSpan LockTime,
     int MaxAttempts,
     bool IdempotencyEnabled,
+    bool RenewLock,
     IReadOnlyCollection<string> TypeIds);
 
 internal sealed record BatchRuntimeConfig(
