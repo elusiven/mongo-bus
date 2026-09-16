@@ -60,7 +60,7 @@ public class ConfigValidationEdgeTests
         options.ClaimCheck.ProviderName = "memory";
         options.ClaimCheck.Cleanup.Interval = TimeSpan.Zero;
 
-        var act = () => MongoBusConfigValidator.ValidateOptions(options);
+        var act = () => MongoBusConfigValidator.ValidateOptions(options, hasClaimCheckProvider: true);
 
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*Cleanup.Interval*");
@@ -74,7 +74,7 @@ public class ConfigValidationEdgeTests
         options.ClaimCheck.ProviderName = "memory";
         options.ClaimCheck.Cleanup.MinimumAge = TimeSpan.FromSeconds(-1);
 
-        var act = () => MongoBusConfigValidator.ValidateOptions(options);
+        var act = () => MongoBusConfigValidator.ValidateOptions(options, hasClaimCheckProvider: true);
 
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*Cleanup.MinimumAge*");
@@ -89,7 +89,7 @@ public class ConfigValidationEdgeTests
         options.ProcessedMessageTtl = TimeSpan.FromDays(7);
         options.ClaimCheck.Cleanup.MinimumAge = TimeSpan.FromDays(5); // less than ProcessedMessageTtl
 
-        var act = () => MongoBusConfigValidator.ValidateOptions(options);
+        var act = () => MongoBusConfigValidator.ValidateOptions(options, hasClaimCheckProvider: true);
 
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*MinimumAge*ProcessedMessageTtl*");

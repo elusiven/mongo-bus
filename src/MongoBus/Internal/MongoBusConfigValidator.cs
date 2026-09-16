@@ -7,7 +7,11 @@ internal static class MongoBusConfigValidator
 {
     private static readonly TimeSpan MinimumRenewedLockTime = TimeSpan.FromSeconds(1);
 
-    public static void ValidateOptions(MongoBusOptions options)
+    /// <param name="hasClaimCheckProvider">
+    /// Whether a claim-check provider is registered. A message can request a claim check even with
+    /// <c>ClaimCheck.Enabled</c> off, so payloads are stored, read and cleaned up whenever a provider exists.
+    /// </param>
+    public static void ValidateOptions(MongoBusOptions options, bool hasClaimCheckProvider = false)
     {
         if (string.IsNullOrWhiteSpace(options.ConnectionString))
             throw new InvalidOperationException("MongoBusOptions.ConnectionString is required.");
@@ -19,6 +23,8 @@ internal static class MongoBusConfigValidator
             throw new InvalidOperationException("MongoBusOptions.ProcessedMessageTtl must be > 0.");
 
         ValidateClaimCheck(options);
+        if (hasClaimCheckProvider)
+            ValidateClaimCheckStorage(options);
         ValidateOutbox(options);
     }
 
@@ -89,6 +95,18 @@ internal static class MongoBusConfigValidator
 
         if (cc.Compression.Enabled && string.IsNullOrWhiteSpace(cc.Compression.Algorithm))
             throw new InvalidOperationException("ClaimCheck.Compression.Algorithm is required when compression is enabled.");
+    }
+
+    private static void ValidateClaimCheckStorage(MongoBusOptions options)
+    {
+        var cc = options.ClaimCheck;
+
+        if (cc.Compression.MaxDecompressedBytes <= 0)
+            throw new InvalidOperationException(
+                "ClaimCheck.Compression.MaxDecompressedBytes must be > 0; it limits how much of a payload a consumer reads.");
+
+        if (!cc.Cleanup.Enabled)
+            return;
 
         if (cc.Cleanup.Interval <= TimeSpan.Zero)
             throw new InvalidOperationException("ClaimCheck.Cleanup.Interval must be > 0 when cleanup is enabled.");
