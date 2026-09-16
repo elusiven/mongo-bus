@@ -195,12 +195,16 @@ internal sealed class MongoBusRuntime : BackgroundService
 
             var messages = new List<InboxMessage> { firstMsg };
             var lastReceived = DateTime.UtcNow;
+            var assemblyDeadline = batchStart.Add(AssemblyWindowFor(cfg.LockTime));
 
             while (messages.Count < cfg.Options.MaxBatchSize)
             {
                 var now = DateTime.UtcNow;
                 var elapsed = now - batchStart;
                 var idle = now - lastReceived;
+
+                if (now >= assemblyDeadline)
+                    break;
 
                 if (cfg.Options.FlushMode == BatchFlushMode.SinceFirstMessage)
                 {
@@ -227,6 +231,14 @@ internal sealed class MongoBusRuntime : BackgroundService
             await DispatchBatchWithBackpressureAsync(cfg, limiter, messages, batchStart, ct);
         }
     }
+
+    /// <summary>
+    /// A batch holds every message's lock for as long as it is being assembled, so assembly stops halfway through the
+    /// lock and leaves the rest of it for the handler. Without this bound a batch that never reaches its minimum size
+    /// waits for messages that may never arrive: its own messages' locks lapse, the worker locks them again, and the
+    /// handler is given the same message several times over in one batch.
+    /// </summary>
+    private static TimeSpan AssemblyWindowFor(TimeSpan lockTime) => lockTime / 2;
 
     private async Task DispatchBatchWithBackpressureAsync(
         BatchRuntimeConfig cfg,
