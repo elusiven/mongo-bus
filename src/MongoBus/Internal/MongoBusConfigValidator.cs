@@ -50,6 +50,7 @@ internal static class MongoBusConfigValidator
             foreach (var batchDef in batchDefs)
             {
                 batchDef.BatchOptions.EnsureValid();
+                ValidateBatchAssemblyFitsInLock(batchDef);
                 if (batchDef.GroupingStrategy is null)
                     throw new InvalidOperationException($"Batch consumer '{batchDef.ConsumerType.Name}' must define a GroupingStrategy.");
             }
@@ -79,6 +80,22 @@ internal static class MongoBusConfigValidator
 
         if (def.MaxAttempts < 1)
             throw new InvalidOperationException($"Consumer '{def.ConsumerType.Name}' MaxAttempts must be >= 1.");
+    }
+
+    /// <summary>
+    /// A batch holds every message's lock while it is being assembled, so a window reaching the lock itself would
+    /// guarantee those locks lapse before the handler ever sees the batch.
+    /// </summary>
+    private static void ValidateBatchAssemblyFitsInLock(IBatchConsumerDefinition def)
+    {
+        var options = def.BatchOptions;
+        var flushesOnWait = options.FlushMode == BatchFlushMode.SinceFirstMessage;
+        var assemblyWindow = flushesOnWait ? options.MaxBatchWaitTime : options.MaxBatchIdleTime;
+        var settingName = flushesOnWait ? nameof(options.MaxBatchWaitTime) : nameof(options.MaxBatchIdleTime);
+
+        if (assemblyWindow >= def.LockTime)
+            throw new InvalidOperationException(
+                $"Batch consumer '{def.ConsumerType.Name}' {settingName} ({assemblyWindow}) must be less than its LockTime ({def.LockTime}).");
     }
 
     private static void ValidateClaimCheck(MongoBusOptions options)

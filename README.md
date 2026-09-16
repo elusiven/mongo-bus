@@ -113,7 +113,7 @@ public class OrderBatchDefinition : BatchConsumerDefinition<OrderBatchHandler, O
     {
         MinBatchSize = 1,
         MaxBatchSize = 100,
-        MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // used when FlushMode=SinceFirstMessage
+        MaxBatchWaitTime = TimeSpan.FromSeconds(2),    // used when FlushMode=SinceFirstMessage; must be < LockTime
         MaxBatchIdleTime = TimeSpan.Zero,              // must be 0 when FlushMode=SinceFirstMessage
         FlushMode = BatchFlushMode.SinceFirstMessage,
         FailureMode = BatchFailureMode.RetryBatch,
