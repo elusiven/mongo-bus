@@ -82,7 +82,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 
         await using var lease = await NewRenewer(inbox).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
         await InboxLocks.TakeLockAsync(inbox, message.Id);
-        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+        var signalled = await WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
 
         signalled.Should().BeTrue();
         (await ReloadAsync(inbox, message)).LockOwner.Should().Be(InboxLocks.OtherOwner);
@@ -200,7 +200,7 @@ public class MessageLockRenewerTests(MongoDbFixture fixture)
 
         await using var lease = await new MessageLockRenewer(inbox, log).TryAcquireLeaseAsync(message, lockTime, CancellationToken.None);
         await InboxLocks.TakeLockAsync(inbox, message.Id);
-        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(5));
+        await CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(20));
         await Task.Delay(TimeSpan.FromMilliseconds(200));
 
         log.Warnings.Should().ContainSingle().Which.Should().Contain("no longer holds the lock");

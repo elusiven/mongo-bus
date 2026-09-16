@@ -2014,6 +2014,15 @@ git add tests/MongoBus.Tests/MessageLockRenewerTests.cs docs/superpowers/plans/2
 git commit -m "chat-agent-loop: give the lease tests margins that survive full-suite load"
 ```
 
+- [ ] **Step 5: Close the two margins the brief left behind**
+
+Fix 7's implementer found one wait the table did not name — `Lease_StillGivesUp_WhenTheLoggerThrows` at line 226, whose 8-second timeout would have expired before the 7.5-second give-up and turned Fix 5's guard into a false failure — and reported that the class's thinnest remaining margins are the two lock-taken tests, which wait 5 s for a detection that lands on the renewal tick at 3 s. Two seconds is barely one clock step, against 3x everywhere else. Both are cancellation-wait upper bounds, so widening cannot weaken an assertion: neither test asserts latency, and the give-up budget is asserted separately with its own mutation guard.
+
+- `Lease_SignalsLockLost_WhenAnotherConsumerTakesTheLock`: `WaitForCancellationAsync(lease!.LockLost, TimeSpan.FromSeconds(5))` becomes `TimeSpan.FromSeconds(20)`.
+- `Lease_WarnsOnlyThatTheLockWasTaken_WhenAnotherConsumerTakesIt`: `CancellationTimeAsync(lease!.LockLost, TimeSpan.FromSeconds(5))` becomes `TimeSpan.FromSeconds(20)`.
+
+The 200 ms log-flush delays and the 250 ms lapse buffer stay: they follow an event that has already been awaited, so no clock step or renewal tick lands inside them.
+
 After Fix 5, Fix 6 and Fix 7: re-run every command under Global Constraints "Verification commands", record the results under `## Verification`, and run one scoped correctness review over the new fix commits (second and final fix cycle). Because the flakiness was a failing verification command rather than a review finding, the full suite must pass **three consecutive times** before the branch is pushed; a single green run is not evidence at this failure rate.
 
 ### Review-fixes plan review (deep-reviewer, lens plan, single pass) — "Acceptable with concerns"
