@@ -161,4 +161,5 @@ internal sealed class SagaConsumerDefinition(
     public TimeSpan LockTime => options.LockTime;
     public int MaxAttempts => options.MaxAttempts;
     public bool IdempotencyEnabled => options.IdempotencyEnabled;
+    public bool ShouldRetry(Exception exception) => options.ShouldRetry(exception);
 }

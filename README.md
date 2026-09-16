@@ -522,6 +522,8 @@ builder.Services.AddMongoBusSaga<OrderSagaStateMachine, OrderSagaState>(opt =>
 | `SagaInstanceTtl` | disabled | TTL index on saga instances for auto-cleanup |
 | `DefaultPartitionCount` | 0 (disabled) | Hash-based partition locking for concurrent access |
 | `RetryMode` | DenyList | `DenyList` (retry all except listed) or `AllowList` (retry only listed) |
+| `NoRetryExceptions` | empty | Under `DenyList`, the exception types that are **not** retried; the event is dead-lettered on its first failure |
+| `RetryExceptions` | empty | Under `AllowList`, the only exception types that are retried; anything else is dead-lettered on its first failure |
 | `UseOutbox` | false | Buffer saga publishes and write them with the saga state inside one Mongo transaction. Requires a replica set / sharded cluster and `MongoBusOptions.Outbox.Enabled = true`. See "Checkpoint Granularity & Mid-Flight Failures" below. |
 | `AllowFallbackWhenTransactionsUnsupported` | false | When `UseOutbox = true` but the connected deployment doesn't support transactions, fall back to direct publish (with a warning) instead of throwing. Use for dev/test against standalone Mongo. |
 

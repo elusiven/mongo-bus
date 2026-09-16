@@ -1,5 +1,3 @@
-using System.Reflection;
-
 namespace MongoBus.Internal;
 
 internal static class ErrorMessageFormatter
@@ -11,11 +9,5 @@ internal static class ErrorMessageFormatter
     /// internal implementation details. Reflection wrappers are unwrapped so the real
     /// cause is shown instead of "Exception has been thrown by the target of an invocation."
     /// </summary>
-    public static string Describe(Exception ex)
-    {
-        var current = ex;
-        while (current is TargetInvocationException && current.InnerException is not null)
-            current = current.InnerException;
-        return current.Message;
-    }
+    public static string Describe(Exception ex) => HandlerException.Unwrap(ex).Message;
 }
