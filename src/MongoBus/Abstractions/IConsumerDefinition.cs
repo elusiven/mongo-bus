@@ -18,4 +18,11 @@ public interface IConsumerDefinition
     /// endpoint; batch consumers do not renew. Requires a <see cref="LockTime"/> of at least one second.
     /// </summary>
     bool RenewLock => false;
+
+    /// <summary>
+    /// Whether a failure of this consumer is worth retrying. Returning false dead-letters the message on its first
+    /// failure instead of retrying it up to <see cref="MaxAttempts"/>. The exception is the one the handler threw,
+    /// with any reflection wrapper already removed.
+    /// </summary>
+    bool ShouldRetry(Exception exception) => true;
 }

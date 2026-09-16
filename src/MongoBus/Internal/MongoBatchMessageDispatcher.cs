@@ -19,6 +19,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
     private readonly IClaimCheckManager _claimCheck;
     private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), BatchDispatchRegistration> _dispatchMap;
     private readonly IReadOnlyDictionary<string, int> _maxAttemptsMap;
+    private readonly IReadOnlyDictionary<(string EndpointId, string TypeId), IConsumerDefinition> _definitionMap;
     private readonly IReadOnlyList<IBatchObserver> _observers;
 
     public MongoBatchMessageDispatcher(
@@ -42,6 +43,7 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         _maxAttemptsMap = batchDefinitions
             .GroupBy(d => d.EndpointName)
             .ToDictionary(g => g.Key, g => g.Max(d => d.MaxAttempts));
+        _definitionMap = batchDefinitions.ToDictionary(d => (d.EndpointName, d.TypeId), d => (IConsumerDefinition)d);
     }
 
     public async Task DispatchBatchAsync(IReadOnlyList<InboxMessage> messages, BatchConsumeContext context, CancellationToken ct)
@@ -302,15 +304,19 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
         var nextAttempt = msg.Attempt + 1;
         var maxAttempts = _maxAttemptsMap.GetValueOrDefault(msg.EndpointId, 10);
 
+        if (!ShouldRetry(msg, ex))
+        {
+            _log.LogWarning(
+                "Message {MessageId} on endpoint {EndpointId} failed with a non-retryable {ExceptionType}. Moving to Dead.",
+                msg.Id, msg.EndpointId, HandlerException.Unwrap(ex).GetType().Name);
+            await DeadLetterAsync(msg, nextAttempt, ex);
+            return;
+        }
+
         if (nextAttempt >= maxAttempts)
         {
             _log.LogWarning("Message {MessageId} reached max attempts ({MaxAttempts}) on endpoint {EndpointId}. Moving to Dead.", msg.Id, maxAttempts, msg.EndpointId);
-            await _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
-                .Set(x => x.Status, InboxStatus.Dead)
-                .Set(x => x.Attempt, nextAttempt)
-                .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
-                .Set(x => x.LockOwner, null)
-                .Set(x => x.LockedUntilUtc, null));
+            await DeadLetterAsync(msg, nextAttempt, ex);
             return;
         }
 
@@ -323,6 +329,22 @@ internal sealed class MongoBatchMessageDispatcher : IBatchMessageDispatcher
             .Set(x => x.LockOwner, null)
             .Set(x => x.LockedUntilUtc, null));
     }
+
+    /// <summary>
+    /// A consumer decides whether its own failure is worth retrying. The exception is unwrapped first, because a
+    /// handler that throws synchronously arrives wrapped by the reflection call that invoked it.
+    /// </summary>
+    private bool ShouldRetry(InboxMessage msg, Exception ex) =>
+        !_definitionMap.TryGetValue((msg.EndpointId, msg.TypeId), out var definition)
+        || definition.ShouldRetry(HandlerException.Unwrap(ex));
+
+    private Task DeadLetterAsync(InboxMessage msg, int attempt, Exception ex) =>
+        _outcomes.RecordAsync([msg], Builders<InboxMessage>.Update
+            .Set(x => x.Status, InboxStatus.Dead)
+            .Set(x => x.Attempt, attempt)
+            .Set(x => x.LastError, ErrorMessageFormatter.Describe(ex))
+            .Set(x => x.LockOwner, null)
+            .Set(x => x.LockedUntilUtc, null));
 
     private void NotifyBatchProcessed(BatchMetrics metrics)
     {
