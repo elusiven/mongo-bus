@@ -10,7 +10,7 @@ from .. import constants, context, documents, envelope, indexes, queries
 from ..claimcheck import core as claimcheck_core
 from ..claimcheck.config import ClaimCheckConfig
 from ..constants import CLAIM_CHECK_CONTENT_TYPE
-from .pump import Consumer, process_one
+from .pump import BatchConsumer, Consumer, process_batch, process_one
 
 
 class MongoBus:
@@ -27,6 +27,7 @@ class MongoBus:
         self._inbox = self._db[constants.INBOX_COLLECTION]
         self._bindings = self._db[constants.BINDINGS_COLLECTION]
         self._consumers: list[Consumer] = []
+        self._batch_consumers: list[BatchConsumer] = []
         self._indexes_ensured = False
         self._claim_check = claim_check
 
@@ -167,10 +168,41 @@ class MongoBus:
 
         return register
 
+    def batch_consumer(
+        self,
+        *,
+        endpoint_id: str,
+        type_id: str,
+        batch_size: int,
+        max_attempts: int = constants.DEFAULT_MAX_ATTEMPTS,
+        idempotent: bool = True,
+        lock_seconds: int = constants.DEFAULT_LOCK_SECONDS,
+    ):
+        def register(handler):
+            self._batch_consumers.append(
+                BatchConsumer(
+                    endpoint_id,
+                    type_id,
+                    handler,
+                    max_attempts,
+                    idempotent,
+                    batch_size,
+                    lock_seconds,
+                )
+            )
+            return handler
+
+        return register
+
     def run_once(self, endpoint_id: str) -> bool:
         self._auto_ensure_indexes()
         for consumer in self._consumers:
             if consumer.endpoint_id == endpoint_id and process_one(self._inbox, consumer, self._claim_check):
+                return True
+        for consumer in self._batch_consumers:
+            if consumer.endpoint_id == endpoint_id and process_batch(
+                self._inbox, consumer, self._claim_check
+            ):
                 return True
         return False
 
@@ -180,6 +212,9 @@ class MongoBus:
             did_work = False
             for consumer in self._consumers:
                 if process_one(self._inbox, consumer, self._claim_check):
+                    did_work = True
+            for consumer in self._batch_consumers:
+                if process_batch(self._inbox, consumer, self._claim_check):
                     did_work = True
             if not did_work:
                 time.sleep(constants.DEFAULT_POLL_SECONDS)
